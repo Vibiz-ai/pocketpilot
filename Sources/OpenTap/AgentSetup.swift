@@ -88,45 +88,114 @@ enum MCPSelfTest {
     }
 }
 
-/// Runs `claude mcp add ...` in a login shell so the user's PATH (Homebrew, npm, ~/.local/bin) applies.
+/// Finds the claude CLI the way a Terminal would (an app opened from Finder only has the minimal system PATH),
+/// then runs it directly: checks for an existing "opentap" entry, replaces it when it points elsewhere, adds it.
 enum ClaudeInstaller {
-    static func install(command: String = MCPDefaults.claudeAddCommand) async throws -> String {
-        let script = "command -v claude >/dev/null 2>&1 || exit 127; \(command)"
-        let (status, output) = try await run("/bin/zsh", ["-lc", script])
-        if status == 127 {
-            throw OpenTapError(.frameworkUnavailable, what: "Claude Code isn't installed on this Mac",
-                               why: "The `claude` command was not found in your shell's PATH",
-                               fix: "Install Claude Code (npm install -g @anthropic-ai/claude-code), or copy the command and run it where claude is installed")
+    enum Registration: Equatable {
+        case notInstalled(searched: [String])
+        case notAdded
+        case added(url: String)
+        case otherURL(String)
+    }
+
+    /// claude's absolute path, or nil plus the places searched.
+    static func locate() async -> (String?, [String]) {
+        let fm = FileManager.default
+        var searched = MCPClientConfig.claudeCandidatePaths()
+        if let p = MCPClientConfig.findClaudeCLI() { return (p, searched) }
+        // Login shell, then interactive login shell (reads ~/.zshrc, where installers and nvm add to PATH).
+        for flags in ["-lc", "-ilc"] {
+            searched.append("zsh \(flags) 'command -v claude'")
+            if let (status, out) = try? await run("/bin/zsh", [flags, "command -v claude"], timeout: 8), status == 0,
+               let line = out.components(separatedBy: .newlines).last(where: { $0.hasPrefix("/") }),
+               fm.isExecutableFile(atPath: line.trimmingCharacters(in: .whitespaces)) {
+                return (line.trimmingCharacters(in: .whitespaces), searched)
+            }
         }
-        if output.localizedCaseInsensitiveContains("already exists") {
-            return "OpenTap is already added to Claude Code"
+        if let (status, out) = try? await run("/bin/zsh", ["-lc", "npm prefix -g"], timeout: 8), status == 0,
+           let prefix = out.components(separatedBy: .newlines).last(where: { $0.hasPrefix("/") }) {
+            let p = prefix.trimmingCharacters(in: .whitespaces) + "/bin/claude"
+            searched.append(p)
+            if fm.isExecutableFile(atPath: p) { return (p, searched) }
         }
+        return (nil, searched)
+    }
+
+    static func notInstalledError(_ searched: [String]) -> OpenTapError {
+        OpenTapError(.frameworkUnavailable, what: "Couldn't find Claude Code on this Mac",
+                     why: "The `claude` command isn't in any of: \(searched.joined(separator: ", "))",
+                     fix: "Install Claude Code (npm install -g @anthropic-ai/claude-code, or the installer from claude.com/code), or copy the command above and run it in Terminal")
+    }
+
+    /// Whether Claude Code has an "opentap" server, and where it points.
+    static func registration(url: String = MCPDefaults.url) async -> Registration {
+        let (path, searched) = await locate()
+        guard let path else { return .notInstalled(searched: searched) }
+        guard let (_, out) = try? await runClaude(path, ["mcp", "get", MCPDefaults.serverName]),
+              let reg = MCPClientConfig.parseClaudeGet(out), let current = reg.url else { return .notAdded }
+        return MCPClientConfig.sameEndpoint(current, url) ? .added(url: current) : .otherURL(current)
+    }
+
+    static func install(url: String = MCPDefaults.url) async throws -> String {
+        let (found, searched) = await locate()
+        guard let path = found else { throw notInstalledError(searched) }
+        var replaced: String?
+        if let (_, out) = try? await runClaude(path, ["mcp", "get", MCPDefaults.serverName]),
+           let reg = MCPClientConfig.parseClaudeGet(out) {
+            if let current = reg.url, MCPClientConfig.sameEndpoint(current, url) {
+                return "OpenTap is already added to Claude Code (\(current))"
+            }
+            // An old entry pointing somewhere else (another port, the mock, a typo): replace it.
+            let scope = reg.scope ?? "user"
+            let (rs, rout) = try await runClaude(path, ["mcp", "remove", MCPDefaults.serverName, "-s", scope])
+            guard rs == 0 else {
+                throw OpenTapError(.io, what: "opentap is configured in Claude Code for \(reg.url ?? "another address")",
+                                   why: "It was added earlier with another address, and removing it failed: \(rout.prefix(200))",
+                                   fix: "Run in Terminal: claude mcp remove opentap -s \(scope), then press Add to Claude Code again")
+            }
+            replaced = reg.url ?? "another address"
+        }
+        let (status, output) = try await runClaude(path, MCPClientConfig.claudeArguments(url: url))
         guard status == 0 else {
             throw OpenTapError(.io, what: "`claude mcp add` failed (exit \(status))",
                                why: output.isEmpty ? "It printed nothing" : String(output.prefix(300)),
                                fix: "Copy the command and run it in Terminal to see the full message")
         }
-        return output.isEmpty ? "Added OpenTap to Claude Code" : String(output.prefix(300))
+        if let old = replaced { return "Replaced the old opentap entry (it pointed at \(old)) with \(url)" }
+        return "Added OpenTap to Claude Code (\(url))"
     }
 
-    private static func run(_ launchPath: String, _ args: [String]) async throws -> (Int32, String) {
+    private static func runClaude(_ path: String, _ args: [String]) async throws -> (Int32, String) {
+        // npm installs are `#!/usr/bin/env node` scripts: node usually sits next to claude (nvm) or in Homebrew.
+        let dir = (path as NSString).deletingLastPathComponent
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = [dir, "/opt/homebrew/bin", "/usr/local/bin", env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"].joined(separator: ":")
+        return try await run(path, args, environment: env, timeout: 60)
+    }
+
+    private static func run(_ launchPath: String, _ args: [String], environment: [String: String]? = nil,
+                            timeout: TimeInterval) async throws -> (Int32, String) {
         try await withCheckedThrowingContinuation { cont in
             let p = Process()
             p.executableURL = URL(fileURLWithPath: launchPath)
             p.arguments = args
+            if let environment { p.environment = environment }
             let pipe = Pipe()
             p.standardOutput = pipe
             p.standardError = pipe
+            p.standardInput = FileHandle.nullDevice
             p.terminationHandler = { proc in
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
                 let out = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
                 cont.resume(returning: (proc.terminationStatus, out))
             }
             do { try p.run() } catch {
-                cont.resume(throwing: OpenTapError(.io, what: "Couldn't start a shell to run claude",
+                cont.resume(throwing: OpenTapError(.io, what: "Couldn't run \((launchPath as NSString).lastPathComponent)",
                                                    why: error.localizedDescription,
                                                    fix: "Copy the command and paste it into Terminal"))
+                return
             }
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { if p.isRunning { p.terminate() } }
         }
     }
 }

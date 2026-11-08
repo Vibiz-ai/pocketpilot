@@ -78,11 +78,17 @@ struct USBStep: View {
                 case .paired:
                     LiveStatusLine(kind: .ok, text: "\(d.name) trusts this Mac")
                 case .locked:
-                    LiveStatusLine(kind: .warning, text: "Unlock \(d.name) to continue")
+                    HStack {
+                        LiveStatusLine(kind: model.working.contains(.usb) ? .waiting : .warning,
+                                       text: model.working.contains(.usb) ? "Unlock \(d.name); OpenTap checks again by itself" : "Unlock \(d.name) to continue")
+                        Spacer()
+                        Button("I've unlocked it, check again") { model.requestTrust() }
+                            .disabled(model.working.contains(.usb))
+                    }
                 case .awaitingUserTrust:
                     LiveStatusLine(kind: .waiting, text: "On \(d.name), tap Trust and enter your passcode")
                 case .denied:
-                    LiveStatusLine(kind: .warning, text: "\"Don't Trust\" was tapped. Unplug and replug the iPhone to be asked again")
+                    LiveStatusLine(kind: .warning, text: "\"Don't Trust\" was tapped. Unplug and replug the iPhone to be asked again (the card below says what to do if no alert appears)")
                 case .notPaired, .unknown:
                     HStack {
                         LiveStatusLine(kind: .waiting, text: "Not trusted yet")
@@ -168,8 +174,14 @@ struct BluetoothStep: View {
             InstructionList(items: [
                 "On the iPhone, open **Settings > Bluetooth** and make sure Bluetooth is on.",
                 "Under **Other Devices**, tap **\(advertisedName)**.",
-                "If the iPhone asks to pair, tap **Pair**.",
+                "If the iPhone asks to pair, tap **Pair**. If this Mac also shows a pairing request, accept it.",
             ])
+            ForEach(Array(model.pairingWarnings.enumerated()), id: \.offset) { _, w in
+                ErrorCard(error: w, retryTitle: "Restart Bluetooth") { model.restartBluetooth() }
+            }
+            if model.bluetoothHostMismatch != nil {
+                Button("It's the same iPhone") { model.acceptBluetoothHost() }
+            }
             HStack {
                 statusLine
                 Spacer()
@@ -195,9 +207,17 @@ struct BluetoothStep: View {
         switch model.hidState {
         case .off: LiveStatusLine(kind: .warning, text: "Bluetooth keyboard is off")
         case .unavailable: LiveStatusLine(kind: .warning, text: "Bluetooth isn't available")
-        case .advertising(let n): LiveStatusLine(kind: .waiting, text: "Discoverable as \"\(n)\". Waiting for the iPhone")
+        case .advertising(let n):
+            LiveStatusLine(kind: .waiting, text: model.pairingWarnings.isEmpty
+                           ? "Discoverable as \"\(n)\". Waiting for the iPhone"
+                           : "Advertising as \"\(n)\" with problems (see below). Waiting for the iPhone")
         case .connecting: LiveStatusLine(kind: .waiting, text: "iPhone is connecting")
-        case .connected(let host): LiveStatusLine(kind: .ok, text: host.map { "Connected to \($0)" } ?? "Connected")
+        case .connected(let host):
+            if model.bluetoothHostMismatch != nil {
+                LiveStatusLine(kind: .warning, text: "Connected to \(host ?? "another device"), not the iPhone on the cable")
+            } else {
+                LiveStatusLine(kind: .ok, text: host.map { "Connected to \($0)" } ?? "Connected")
+            }
         case .failed: LiveStatusLine(kind: .warning, text: "Bluetooth stopped")
         }
     }
@@ -220,7 +240,11 @@ struct AssistiveTouchStep: View {
                 } else {
                     switch model.assistiveTouchAutoEnabled {
                     case .some(true):
-                        LiveStatusLine(kind: .ok, text: "Turned on over USB")
+                        if model.usbAssistiveTouchDidNotTakeEffect {
+                            LiveStatusLine(kind: .warning, text: "The USB switch didn't take effect. Turn it on by hand:")
+                        } else {
+                            LiveStatusLine(kind: .waiting, text: "Asked the iPhone to turn on AssistiveTouch over USB; checking for the pointer")
+                        }
                     case .some(false):
                         LiveStatusLine(kind: .warning, text: "Couldn't turn it on over USB. Do it on the iPhone:")
                     case .none:
@@ -255,7 +279,7 @@ struct CalibrationStep: View {
             Text("iOS speeds up the pointer the faster it moves. OpenTap measures that curve once so taps land exactly where your agent aims.")
                 .fixedSize(horizontal: false, vertical: true)
             InstructionList(items: [
-                "Unlock the iPhone and go to the Home Screen.",
+                CalibrationPlan.plainScreenAdvice + ".",
                 "Don't touch the iPhone or the Mac's mouse for about 30 seconds.",
                 "Press **Start calibration**.",
             ])
@@ -284,6 +308,16 @@ struct CalibrationStep: View {
 
 struct AgentStep: View {
     @EnvironmentObject var model: AppModel
+
+    @ViewBuilder private var registrationLine: some View {
+        switch model.claudeRegistration {
+        case .none: EmptyView()
+        case .added(let url): LiveStatusLine(kind: .ok, text: "Claude Code has opentap at \(url)")
+        case .notAdded: LiveStatusLine(kind: .warning, text: "Not added to Claude Code yet: press Add to Claude Code or run the command")
+        case .otherURL(let url): LiveStatusLine(kind: .warning, text: "Claude Code's opentap points at \(url); press Add to Claude Code to replace it")
+        case .notInstalled: LiveStatusLine(kind: .warning, text: "Claude Code wasn't found on this Mac (use the command where it is installed)")
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -316,6 +350,7 @@ struct AgentStep: View {
                 if case .failed(let e) = model.claudeInstall {
                     ErrorCard(error: e, retryTitle: "Try again") { model.addToClaudeCode() }
                 }
+                registrationLine
             }
 
             VStack(alignment: .leading, spacing: 8) {
@@ -330,9 +365,9 @@ struct AgentStep: View {
                         .buttonStyle(.borderedProminent)
                         .disabled(model.agentTest == .running)
                     switch model.agentTest {
-                    case .idle: Text("Calls the status tool, just like your agent will.").font(.callout).foregroundStyle(.secondary)
+                    case .idle: Text("Calls the status tool over MCP, just like your agent will.").font(.callout).foregroundStyle(.secondary)
                     case .running: ProgressView().controlSize(.small)
-                    case .passed: LiveStatusLine(kind: .ok, text: "Your agent can reach OpenTap")
+                    case .passed: LiveStatusLine(kind: .ok, text: "The OpenTap server answers like it will for your agent")
                     case .failed: EmptyView()
                     }
                 }

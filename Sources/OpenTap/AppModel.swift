@@ -38,6 +38,14 @@ final class AppModel: ObservableObject {
     @Published private(set) var calibrationProgress: CalibrationProgress?
     @Published private(set) var agentTest: AgentTestState = .idle
     @Published private(set) var claudeInstall: ClaudeInstallState = .idle
+    /// Whether Claude Code has the opentap server (checked when step 7 opens and after Add).
+    @Published private(set) var claudeRegistration: ClaudeInstaller.Registration?
+    /// Pointer probes sent since AssistiveTouch was asked to turn on over USB (to tell when it didn't take).
+    @Published private(set) var probesSinceUSBEnable = 0
+    /// Discoverability / device-class problems reported by the Bluetooth transport.
+    @Published private(set) var pairingWarnings: [OpenTapError] = []
+    /// The user confirmed a Bluetooth host whose name differs from the USB iPhone's.
+    @Published private(set) var acceptedHost: String?
     @Published var showOnboarding: Bool
     @Published private(set) var onboardingDone: Bool {
         didSet { defaults.set(onboardingDone, forKey: Self.onboardingDoneKey) }
@@ -81,10 +89,19 @@ final class AppModel: ObservableObject {
                 }
             })
         }
-        onMain(env.status.snapshot) { m, v in m.status = v; m.evaluate() }
+        onMain(env.status.snapshot) { m, v in
+            m.status = v
+            if v[.assistiveTouch].health == .failed { m.pointerDetected = false }
+            m.evaluate()
+        }
         onMain(env.device.state) { m, v in m.deviceState = v; m.deviceChanged(v); m.evaluate() }
         onMain(env.frames.state) { m, v in m.frameState = v; m.evaluate() }
-        onMain(env.hid.state) { m, v in m.hidState = v; m.evaluate() }
+        onMain(env.hid.state) { m, v in
+            if m.hidState.isConnected && !v.isConnected { m.pointerDetected = false }
+            m.hidState = v
+            m.pairingWarnings = m.env.hid.pairingWarnings
+            m.evaluate()
+        }
         onMain(env.mcp.state) { m, v in m.mcpState = v; m.evaluate() }
 
         subscriptions.append(env.log.updates.subscribe { [weak self] entry in
@@ -101,13 +118,32 @@ final class AppModel: ObservableObject {
         })
     }
 
+    private var pulling = false
+
+    /// The pixel-buffer -> CGImage copy (~12 MB) happens off the main thread so the UI (and Bluetooth writes,
+    /// which run on main) never wait for it.
     private func pullFrame() {
         let count = env.frames.frameCount
-        guard count != lastPreviewFrame, let frame = env.frames.latestFrame else { return }
-        lastPreviewFrame = count
-        preview = frame
-        frameSize = env.frames.frameSize ?? CGSize(width: frame.width, height: frame.height)
-        if case .screen = currentStep { evaluate() }
+        guard !pulling, count != lastPreviewFrame else { return }
+        if case .running = frameState {} else {
+            if preview != nil { preview = nil; lastPreviewFrame = -1 }   // never show a stale picture as live
+            return
+        }
+        pulling = true
+        let frames = env.frames
+        Task.detached(priority: .userInitiated) {
+            let frame = frames.latestFrame
+            let size = frames.frameSize
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.pulling = false
+                guard let frame else { return }
+                self.lastPreviewFrame = count
+                self.preview = frame
+                self.frameSize = size ?? CGSize(width: frame.width, height: frame.height)
+                if case .screen = self.currentStep { self.evaluate() }
+            }
+        }
     }
 
     private func append(_ entry: LogEntry) {
@@ -170,8 +206,11 @@ final class AppModel: ObservableObject {
     }
 
     func restartCapture() {
+        let wasStarted = started.contains("capture")
         started.insert("capture")
         stepErrors[.screen] = nil
+        // A started source ignores start(); stop first so a failed or stuck capture really re-attaches.
+        if wasStarted { env.frames.stop() }
         Task {
             do { try await env.frames.start() } catch { fail(.screen, error, what: "Couldn't start the iPhone screen") }
         }
@@ -256,7 +295,8 @@ final class AppModel: ObservableObject {
     private func deviceChanged(_ s: DeviceLinkState) {
         guard case .attached(let d, let trust) = s else { pairRequestedFor = nil; return }
         if trust == .paired { stepErrors[.usb] = nil }
-        if trust == .notPaired || trust == .unknown, pairRequestedFor != d.udid, showOnboarding {
+        // .locked too: pair() keeps polling through "locked" and finishes once the iPhone is unlocked.
+        if Self.needsTrustRequest(trust), pairRequestedFor != d.udid, showOnboarding, !working.contains(.usb) {
             pairRequestedFor = d.udid
             requestTrust()
         }
@@ -264,7 +304,10 @@ final class AppModel: ObservableObject {
 
     var deviceLinkUnavailable: Bool { if case .unavailable = deviceState { return true }; return false }
 
+    static func needsTrustRequest(_ t: TrustState) -> Bool { t == .notPaired || t == .unknown || t == .locked }
+
     func requestTrust() {
+        guard !working.contains(.usb) else { return }
         stepErrors[.usb] = nil
         working.insert(.usb)
         Task {
@@ -288,7 +331,9 @@ final class AppModel: ObservableObject {
             defer { working.remove(.assistiveTouch) }
             do {
                 try await env.device.setAssistiveTouch(true)
+                // Reading the key back only proves it was written, not that iOS acted on it: the pointer probe decides.
                 assistiveTouchAutoEnabled = (try? await env.device.assistiveTouchEnabled()) ?? true
+                probesSinceUSBEnable = 0
             } catch {
                 assistiveTouchAutoEnabled = false
                 env.log.warning("app", "AssistiveTouch couldn't be turned on over USB: \(OpenTapError.wrap(error, what: "AssistiveTouch").description)")
@@ -297,13 +342,13 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Wiggles the mouse and looks for the pointer dot until it is found or the step is left.
+    /// Wiggles the mouse and looks for the pointer dot until it is found or the step is left (select() cancels it).
     func startPointerProbe() {
         pointerProbe?.cancel()
         pointerProbe = Task { [weak self] in
             var dx: Int8 = 24
             while !Task.isCancelled {
-                guard let self else { return }
+                guard let self, self.currentStep == .assistiveTouch || !self.showOnboarding else { return }
                 if self.pointerDetected { return }
                 if await self.probePointerOnce(dx: dx) { return }
                 dx = -dx
@@ -312,6 +357,14 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func stopPointerProbe() {
+        pointerProbe?.cancel()
+        pointerProbe = nil
+    }
+
+    /// The USB switch was used, but the pointer still hasn't shown up after a few probes.
+    var usbAssistiveTouchDidNotTakeEffect: Bool { assistiveTouchAutoEnabled == true && !pointerDetected && probesSinceUSBEnable >= 3 }
+
     private func probePointerOnce(dx: Int8) async -> Bool {
         guard hidState.isConnected else {
             stepErrors[.assistiveTouch] = OpenTapError(.hidNotConnected, what: "Can't move the pointer yet",
@@ -319,25 +372,27 @@ final class AppModel: ObservableObject {
                 fix: "Finish step 4 (Bluetooth pairing) first")
             return false
         }
-        let before = env.frames.latestFrame
-        let count = env.frames.frameCount
         do {
-            try await env.hid.send(.mouse(MouseReport(dx: dx, dy: dx)))
-            try await env.hid.send(.mouse(MouseReport()))
-            let after = try await env.frames.waitForFrame(after: count, timeout: 1.5)
-            if let hit = env.pointer.locate(in: after, hint: nil, previous: before), hit.confidence >= 0.5 {
+            // Through the controller's gate, so a probe can never interleave with a tap or calibration.
+            let found = try await env.controller.probePointer(dx: dx)
+            if Task.isCancelled { return false }
+            probesSinceUSBEnable += 1
+            if let hit = found {
                 pointerDetected = true
                 stepErrors[.assistiveTouch] = nil
                 if env.status.snapshot.value[.assistiveTouch].health != .ok {
                     env.status.set(.assistiveTouch, .ok("Pointer visible"))
                 }
-                env.log.info("app", "Pointer detected at (\(Int(hit.point.x)), \(Int(hit.point.y)))")
+                env.log.info("app", "Pointer detected at (\(Int(hit.x)), \(Int(hit.y)))")
                 return true
             }
-            stepErrors[.assistiveTouch] = OpenTapError(.pointerNotFound, what: "No pointer on the iPhone screen yet",
-                why: "A mouse move was sent but no pointer dot appeared, so AssistiveTouch is probably off",
+            let why = usbAssistiveTouchDidNotTakeEffect
+                ? "OpenTap asked the iPhone over USB to turn AssistiveTouch on, but no pointer appeared, so that switch didn't take effect on this iOS version"
+                : "A mouse move was sent but no pointer dot appeared (the screen didn't change), so AssistiveTouch is probably off"
+            stepErrors[.assistiveTouch] = OpenTapError(.pointerNotFound, what: "No pointer on the iPhone screen yet", why: why,
                 fix: "On the iPhone open Settings > Accessibility > Touch > AssistiveTouch and turn it on")
         } catch {
+            if Task.isCancelled { return false }
             stepErrors[.assistiveTouch] = OpenTapError.wrap(error, what: "Couldn't check for the pointer")
         }
         return false
@@ -353,7 +408,8 @@ final class AppModel: ObservableObject {
         calibrationProgress = CalibrationProgress(fraction: 0, message: "Starting")
         working.insert(.calibration)
         Task {
-            defer { working.remove(.calibration); calibrationProgress = nil }
+            // The status flips to ok while progress is still set; re-evaluate once it clears so the step advances.
+            defer { working.remove(.calibration); calibrationProgress = nil; evaluate() }
             do {
                 let data = try await env.controller.calibrate { [weak self] p in
                     DispatchQueue.main.async { self?.calibrationProgress = p }
@@ -382,7 +438,12 @@ final class AppModel: ObservableObject {
             do { claudeInstall = .done(try await ClaudeInstaller.install()) } catch {
                 claudeInstall = .failed(OpenTapError.wrap(error, what: "Couldn't add OpenTap to Claude Code"))
             }
+            await checkClaudeRegistration()
         }
+    }
+
+    func checkClaudeRegistration() async {
+        claudeRegistration = await ClaudeInstaller.registration()
     }
 
     func testAgentConnection() {
@@ -434,17 +495,37 @@ final class AppModel: ObservableObject {
         case .screen:
             if case .running = frameState { return preview != nil }
             return false
-        case .bluetooth: return hidState.isConnected
+        case .bluetooth: return hidState.isConnected && bluetoothHostMismatch == nil
         case .assistiveTouch: return pointerDetected || status[.assistiveTouch].health == .ok
-        case .calibration: return status[.calibration].health == .ok && !isCalibrating
+        // A calibration status that carries an error ("previous kept, recalibration failed") is not done.
+        case .calibration: return status[.calibration].health == .ok && status[.calibration].error == nil && !isCalibrating
         case .agent:
             if case .passed = agentTest { return true }
             return false
         }
     }
 
+    /// Set when the Bluetooth host isn't the iPhone on the USB cable (an iPad or a second iPhone connected).
+    var bluetoothHostMismatch: OpenTapError? {
+        guard case .connected(let h) = hidState, let host = h, !host.isEmpty,
+              let usb = deviceState.device?.name, !usb.isEmpty, host != acceptedHost else { return nil }
+        func norm(_ s: String) -> String {
+            s.replacingOccurrences(of: "\u{2019}", with: "'").trimmingCharacters(in: .whitespaces).lowercased()
+        }
+        guard norm(host) != norm(usb) else { return nil }
+        return OpenTapError(.hidNotConnected, what: "Connected to \(host), but the plugged-in iPhone is \(usb)",
+                            why: "Taps would go to \(host) while OpenTap watches \(usb)'s screen",
+                            fix: "On \(host) open Settings > Bluetooth, tap (i) next to this Mac > Forget This Device, then pair from \(usb). If they are the same iPhone, press \"It's the same iPhone\"")
+    }
+
+    func acceptBluetoothHost() {
+        if case .connected(let h) = hidState { acceptedHost = h }
+        evaluate()
+    }
+
     func error(for step: OnboardingStep) -> OpenTapError? {
         if let e = stepErrors[step] { return e }
+        if step == .bluetooth, let e = bluetoothHostMismatch { return e }
         if step == .permissions { return Permission.allCases.lazy.compactMap { self.permissionError($0) }.first }
         if let c = step.component, let e = status[c].error { return e }
         if step == .usb, case .unavailable(let e) = deviceState { return e }
@@ -476,7 +557,9 @@ final class AppModel: ObservableObject {
     }
 
     func select(_ step: OnboardingStep) {
-        advanceTask?.cancel()
+        advanceTask?.cancel(); advanceTask = nil
+        // The probe wiggles the mouse; it must not keep running into calibration's measurements.
+        if step != .assistiveTouch { stopPointerProbe() }
         currentStep = step
         enter(step)
     }
@@ -494,7 +577,7 @@ final class AppModel: ObservableObject {
         switch step {
         case .permissions: refreshPermissions()
         case .usb:
-            if case .attached(_, let trust) = deviceState, trust == .notPaired || trust == .unknown { requestTrust() }
+            if case .attached(_, let trust) = deviceState, Self.needsTrustRequest(trust), !working.contains(.usb) { requestTrust() }
         case .screen: startCaptureIfNeeded()
         case .bluetooth: startBluetooth()
         case .assistiveTouch:
@@ -502,7 +585,9 @@ final class AppModel: ObservableObject {
                 if deviceState.device != nil, assistiveTouchAutoEnabled == nil { enableAssistiveTouchOverUSB() } else { startPointerProbe() }
             }
         case .calibration: break
-        case .agent: startMCP()
+        case .agent:
+            startMCP()
+            Task { await checkClaudeRegistration() }
         }
     }
 
@@ -513,8 +598,9 @@ final class AppModel: ObservableObject {
         advanceTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 900_000_000)
             guard let self else { return }
+            if Task.isCancelled { return }
             self.advanceTask = nil
-            if !Task.isCancelled, self.currentStep == step, self.isVerified(step) { self.goToNext(after: step) }
+            if self.currentStep == step, self.isVerified(step) { self.goToNext(after: step) }
         }
     }
 
@@ -522,6 +608,10 @@ final class AppModel: ObservableObject {
         skipped = []
         stepErrors = [:]
         agentTest = .idle
+        // Re-verify AssistiveTouch from scratch: it may have been turned off since.
+        pointerDetected = false
+        assistiveTouchAutoEnabled = nil
+        probesSinceUSBEnable = 0
         showOnboarding = true
         let first = OnboardingStep.allCases.first { !isVerified($0) } ?? .permissions
         select(first)
