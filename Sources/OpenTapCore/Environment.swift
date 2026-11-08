@@ -53,30 +53,33 @@ public final class OpenTapEnvironment {
     /// Maps each module's state channel onto the StatusModel pills.
     private func bindStatus() {
         let s = status
-        subscriptions.append(device.state.subscribe { st in
+        subscriptions.append(device.state.subscribe { [weak self] st in
             switch st {
             case .unavailable(let e): s.set(.usb, .failed(e))
             case .idle: s.set(.usb, .unknown)
             case .noDevice: s.set(.usb, .pending("Plug in your iPhone with a USB cable"))
             case .attached(let d, let trust):
                 s.update { $0.device = d }
+                self?.recheckCalibration()
                 switch trust {
                 case .paired: s.set(.usb, .ok("\(d.name), iOS \(d.iosVersion)"))
                 case .locked: s.set(.usb, .pending("Unlock \(d.name)"))
                 case .awaitingUserTrust: s.set(.usb, .pending("Tap Trust on \(d.name)"))
                 case .denied: s.set(.usb, .failed(OpenTapError(.notPaired, what: "\(d.name) is not trusted",
                     why: "\"Don't Trust\" was tapped on the iPhone",
-                    fix: "Unplug and replug the iPhone, then tap Trust and enter your passcode")))
+                    fix: ManualSteps.denied)))
                 case .notPaired, .unknown: s.set(.usb, .pending("\(d.name) connected, not trusted yet"))
                 }
             }
         })
-        subscriptions.append(frames.state.subscribe { st in
+        subscriptions.append(frames.state.subscribe { [weak self] st in
             switch st {
             case .idle: s.set(.screen, .unknown)
             case .waitingForDevice: s.set(.screen, .pending("Waiting for the iPhone screen"))
             case .starting: s.set(.screen, .pending("Starting screen capture"))
-            case .running(let name): s.set(.screen, .ok("Live from \(name)"))
+            case .running(let name):
+                s.set(.screen, .ok("Live from \(name)"))
+                self?.recheckCalibration()
             case .failed(let e): s.set(.screen, .failed(e))
             }
         })
@@ -97,10 +100,34 @@ public final class OpenTapEnvironment {
             case .failed(let e): s.set(.mcp, .failed(e))
             }
         })
-        if let cal = try? calibrationStore.load() {
-            s.set(.calibration, .ok("Calibrated \(cal.createdAt.formatted(date: .abbreviated, time: .shortened))"))
-        } else {
-            s.set(.calibration, .pending("Not calibrated yet"))
+        recheckCalibration()
+    }
+
+    /// Sets the Calibration pill from the saved calibration *for the iPhone that is connected now*: a file
+    /// measured on another iPhone (or another screen shape) is not "done". Called at launch, on attach and
+    /// when the screen starts. Leaves a running calibration and a "previous kept" status alone.
+    public func recheckCalibration() {
+        let current = status.snapshot.value[.calibration]
+        if current.health == .pending, current.detail.hasPrefix("Calibrating") { return }
+        guard let cal = try? calibrationStore.load() else {
+            status.set(.calibration, .pending("Not calibrated yet"))
+            return
         }
+        let snap = status.snapshot.value
+        if let calUDID = cal.deviceUDID, let d = snap.device, calUDID != d.udid {
+            status.set(.calibration, .pending("Calibrated for another iPhone: run calibration for \(d.name)"))
+            return
+        }
+        if let size = frames.frameSize, size.width > 0, cal.screenshotSize.width > 0 {
+            let aspect = Double(size.height / size.width)
+            let calAspect = Double(cal.screenshotSize.height / cal.screenshotSize.width)
+            if abs(aspect - calAspect) > 0.03 * aspect {
+                status.set(.calibration, .pending("Calibrated for a different screen shape: run calibration again"))
+                return
+            }
+        }
+        if current.health == .ok, current.error != nil { return }
+        let ok = ComponentStatus.ok("Calibrated \(cal.createdAt.formatted(date: .abbreviated, time: .shortened))")
+        if current != ok { status.set(.calibration, ok) }
     }
 }

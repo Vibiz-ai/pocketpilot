@@ -19,6 +19,7 @@ public struct OpenTapError: Error, Codable, Equatable, Sendable, LocalizedError,
         case calibrationFailed
         case pointerNotFound
         case textNotFound
+        case appNotOpened
         case invalidArgument
         case timeout
         case io

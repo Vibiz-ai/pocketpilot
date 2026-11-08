@@ -36,6 +36,8 @@ public final class MCPHandler: @unchecked Sendable {
     private let lock = NSLock()
     private var sessions: [String: Session] = [:]
     private let gate = SerialGate()
+    /// The input tool currently holding the gate, for status ("Busy: calibrate 57%").
+    private var busy: (tool: String, since: Date, progress: Double?)?
 
     public init(controller: PhoneController, status: StatusModel, log: Log, publicURL: String = MCPDefaults.url) {
         self.controller = controller; self.statusModel = status; self.log = log; self.publicURL = publicURL
@@ -200,9 +202,10 @@ public final class MCPHandler: @unchecked Sendable {
         }
         let id = obj["id"]
         if let id, !MCPHandler.isValidID(id) {
+            let why = id.isNull ? "The id is null, and MCP forbids null request ids" : "The id is \(id.typeName)"
             return rpcError(id: .null, code: RPCCode.invalidRequest,
-                            OpenTapError(.invalidArgument, what: "Invalid JSON-RPC id", why: "The id is \(id.typeName)",
-                                         fix: "Use a string or number id"))
+                            OpenTapError(.invalidArgument, what: "Invalid JSON-RPC id", why: why,
+                                         fix: "Use a string or number id (or leave id out for a notification)"))
         }
         guard obj["jsonrpc"]?.stringValue == "2.0" else {
             if id == nil { return nil }
@@ -288,7 +291,7 @@ public final class MCPHandler: @unchecked Sendable {
 
     static func isValidID(_ id: JSONValue) -> Bool {
         switch id {
-        case .string, .number, .null: return true
+        case .string, .number: return true
         default: return false
         }
     }
@@ -327,14 +330,23 @@ public final class MCPHandler: @unchecked Sendable {
         log.info("mcp", "→ \(name) \(arguments.isEmpty ? "" : JSONValue.object(arguments).serializedString().prefix(200))")
         let result: JSONValue
         do {
-            result = try await gate.run { [self] in try await self.runTool(name, arguments) }
+            if MCPHandler.readOnlyTools.contains(name) {
+                // Read-only: never queue behind a 30 s calibration or a long swipe.
+                result = try await runTool(name, arguments)
+            } else {
+                result = try await gate.run { [self] in
+                    lock.withLock { busy = (name, Date(), nil) }
+                    defer { lock.withLock { busy = nil } }
+                    return try await self.runTool(name, arguments)
+                }
+            }
             log.info("mcp", "← \(name) ok in \(Int(Date().timeIntervalSince(started) * 1000)) ms")
         } catch {
             let e = OpenTapError.wrap(error, what: "The \(name) tool failed")
             log.warning("mcp", "← \(name) failed: \(e.description)")
             var shot: Screenshot?
             if MCPHandler.attachScreenshotOnError(e.code) {
-                shot = try? await gate.run { [self] in try await self.controller.screenshot(includeText: true) }
+                shot = try? await controller.screenshot(includeText: true)
             }
             result = MCPHandler.errorResult(e, screenshot: shot)
         }
@@ -345,7 +357,12 @@ public final class MCPHandler: @unchecked Sendable {
         switch name {
         case "status":
             try MCPHandler.rejectArguments(args, tool: name)
-            return MCPHandler.textResult(MCPHandler.statusText(await controller.status(), url: publicURL))
+            var text = MCPHandler.statusText(await controller.status(), url: publicURL)
+            if let b = lock.withLock({ busy }) {
+                let pct = b.progress.map { " \(Int(($0 * 100).rounded()))%" } ?? ""
+                text = "Busy: running \(b.tool)\(pct) for \(Int(Date().timeIntervalSince(b.since))) s; other actions wait for it.\n" + text
+            }
+            return MCPHandler.textResult(text)
         case "screenshot":
             if let extra = args.keys.first(where: { $0 != "include_text" }) {
                 throw OpenTapError.invalidArgument(extra, why: "screenshot has no argument named \"\(extra)\"", fix: "Pass only include_text")
@@ -356,8 +373,10 @@ public final class MCPHandler: @unchecked Sendable {
         case "calibrate":
             try MCPHandler.rejectArguments(args, tool: name)
             let log = self.log
-            let data = try await controller.calibrate { p in
+            let data = try await controller.calibrate { [weak self] p in
                 log.info("mcp", "Calibrating \(Int(p.fraction * 100))%: \(p.message)")
+                guard let self else { return }
+                self.lock.withLock { if self.busy != nil { self.busy?.progress = p.fraction } }
             }
             let summary = "Calibrated for a \(Int(data.screenshotSize.width))x\(Int(data.screenshotSize.height)) screenshot "
                 + "(\(data.x.samples.count) x samples, \(data.y.samples.count) y samples, parked \(data.park.rawValue)). Taps now use this curve."
@@ -382,11 +401,15 @@ public final class MCPHandler: @unchecked Sendable {
         }
     }
 
-    /// Errors where a fresh look at the screen helps the agent recover.
+    /// Tools that only read state; they run outside the gate.
+    static let readOnlyTools: Set<String> = ["status", "screenshot"]
+
+    /// Every error gets the live screen attached when there is one ("every action returns image + text");
+    /// only the errors that mean there is no screen to show skip it.
     static func attachScreenshotOnError(_ code: OpenTapError.Code) -> Bool {
         switch code {
-        case .textNotFound, .pointerNotFound, .timeout, .invalidArgument, .calibrationFailed: return true
-        default: return false
+        case .noFrame, .captureFailed, .noDevice: return false
+        default: return true
         }
     }
 
@@ -436,7 +459,7 @@ public final class MCPHandler: @unchecked Sendable {
 
     public static func statusText(_ s: StatusSnapshot, url: String) -> String {
         var lines: [String] = []
-        lines.append(s.canControl ? "Ready: OpenTap can control the iPhone." : "Not ready: fix the items marked FAILED or PENDING below.")
+        lines.append(statusHeadline(s))
         if let d = s.device {
             lines.append("iPhone: \(d.name) (\(d.productType), iOS \(d.iosVersion))")
         } else {
@@ -451,6 +474,17 @@ public final class MCPHandler: @unchecked Sendable {
         }
         lines.append("MCP endpoint: \(url)")
         return lines.joined(separator: "\n")
+    }
+
+    static func statusHeadline(_ s: StatusSnapshot) -> String {
+        if s.canControl { return "Ready: OpenTap can control the iPhone." }
+        let needed: [Component] = [.screen, .bluetooth, .assistiveTouch, .calibration]
+        let blocking = needed.filter { [.failed, .pending].contains(s[$0].health) }
+        if blocking.isEmpty {
+            let unverified = needed.filter { s[$0].health == .unknown }.map(\.title)
+            return "Probably ready: \(unverified.joined(separator: ", ")) not verified yet (UNKNOWN below). The first tap or calibrate checks it; act and read the result."
+        }
+        return "Not ready: fix \(blocking.map(\.title).joined(separator: ", ")) (marked FAILED or PENDING below)."
     }
 
     func health() async -> JSONValue {

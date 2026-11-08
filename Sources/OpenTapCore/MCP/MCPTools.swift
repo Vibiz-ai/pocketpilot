@@ -37,6 +37,8 @@ public enum MCPTools {
     public static let maxDurationMs = 10_000
     public static let maxWaitMs = 10_000
     public static let maxBatchActions = 50
+    /// Coordinates above this are rejected up front (no screenshot is anywhere near it).
+    public static let maxCoordinate: Double = 100_000
     public static let maxTextLength = 2_000
 
     public static let instructions = """
@@ -233,7 +235,11 @@ public enum MCPTools {
             return .typeText(text: text, submit: try a.bool("submit", default: false))
         case "press_key":
             let key = try a.text("key")
-            _ = try KeyCombo.parse(key)
+            do { _ = try KeyCombo.parse(key) } catch {
+                let e = OpenTapError.wrap(error, what: "Invalid key")
+                throw OpenTapError(.invalidArgument, what: "Invalid value for '\(context)key'",
+                                   why: stepNote(context) + e.why, fix: e.fix)
+            }
             return .pressKey(key: key)
         case "open_app":
             return .openApp(name: try a.text("name"))
@@ -243,6 +249,13 @@ public enum MCPTools {
             throw OpenTapError(.internalError, what: "Unhandled action \(tool)", why: "The MCP module is missing a case",
                                fix: "Report this bug to the OpenTap project")
         }
+    }
+
+    /// "Step 3: " for a batch context like "actions[2].", plus a reminder that nothing ran; "" outside a batch.
+    static func stepNote(_ context: String) -> String {
+        guard context.hasPrefix("actions["), let close = context.firstIndex(of: "]"),
+              let i = Int(context[context.index(context.startIndex, offsetBy: 8)..<close]) else { return "" }
+        return "Step \(i + 1) (no steps were run): "
     }
 
     /// Parses `batch` arguments. Each item: {"action": "tap", "x": 1, "y": 2}. Also accepts
@@ -323,6 +336,10 @@ public enum MCPTools {
             guard d >= 0 else {
                 throw OpenTapError.invalidArgument(label(k), why: "\(JSONValue.format(d)) is negative",
                                                    fix: "Use a point inside the latest screenshot (origin is the top-left corner)")
+            }
+            guard d <= maxCoordinate else {
+                throw OpenTapError.invalidArgument(label(k), why: "\(JSONValue.format(d)) is far outside any screenshot (limit \(Int(maxCoordinate)))",
+                                                   fix: "Use pixel coordinates from the latest screenshot (about 590 px wide; call screenshot to see its size)")
             }
             return d
         }

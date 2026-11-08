@@ -211,7 +211,13 @@ final class MCPHandlerTests: XCTestCase {
         controller.failure = OpenTapError(.hidNotConnected, what: "Bluetooth isn't connected", why: "No HID host", fix: "Pair OpenTap")
         let r2 = try await callTool("tap", #"{"x":1,"y":1}"#, session: id)
         XCTAssertEqual(r2["isError"], true)
-        XCTAssertEqual(r2["content"]?.arrayValue?.count, 1) // no screenshot for hardware failures
+        // QA: the screen is live, so the agent sees it even when input can't be sent.
+        XCTAssertEqual(r2["content"]?.arrayValue?.count, 2)
+        XCTAssertEqual(r2["content"]?.arrayValue?.first?["type"], "image")
+
+        controller.failure = OpenTapError(.noFrame, what: "No iPhone screen yet", why: "Unplugged", fix: "Plug it in")
+        let r3 = try await callTool("tap", #"{"x":1,"y":1}"#, session: id)
+        XCTAssertEqual(r3["content"]?.arrayValue?.count, 1) // no screen to show
     }
 
     func testBatchAndCalibrateAndStatus() async throws {

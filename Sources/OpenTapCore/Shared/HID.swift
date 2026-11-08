@@ -103,4 +103,22 @@ public protocol HIDTransport: AnyObject {
     func stop()
     /// Sends one input report on the interrupt channel. Throws `.hidNotConnected` if not connected.
     func send(_ report: HIDReport) async throws
+    /// Things that went only half right while advertising (couldn't become discoverable, couldn't set the
+    /// keyboard/mouse device class), each with what/why/fix. Read it when `state` changes; empty when all is well.
+    var pairingWarnings: [OpenTapError] { get }
+}
+
+public extension HIDTransport {
+    var pairingWarnings: [OpenTapError] { [] }
+}
+
+public enum HIDPairingWarnings {
+    public static let notDiscoverable = OpenTapError(.bluetoothUnavailable,
+        what: "This Mac couldn't make itself discoverable automatically",
+        why: "macOS didn't let OpenTap switch on Bluetooth discoverability, so the iPhone may not list this Mac",
+        fix: "On this Mac open System Settings > Bluetooth and keep that window open while you pair (that makes the Mac discoverable)")
+    public static let classNotSet = OpenTapError(.bluetoothUnavailable,
+        what: "This Mac couldn't announce itself as a keyboard and mouse",
+        why: "macOS didn't let OpenTap set the Bluetooth device class, so the iPhone may list this Mac as a computer and say it isn't supported",
+        fix: "Turn Bluetooth off and on on this Mac, then press Restart Bluetooth; if the iPhone still says \"not supported\", restart the Mac")
 }

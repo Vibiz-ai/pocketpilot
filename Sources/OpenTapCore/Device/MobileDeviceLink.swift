@@ -128,7 +128,7 @@ public final class MobileDeviceLink: DeviceLink, @unchecked Sendable {
             case .denied:
                 setTrust(.denied)
                 let e = OpenTapError(.notPaired, what: "\(name) didn't trust this Mac",
-                                     why: "\"Don't Trust\" was tapped on the iPhone", fix: ManualSteps.resetTrust)
+                                     why: "\"Don't Trust\" was tapped on the iPhone", fix: ManualSteps.denied)
                 log.error(Self.category, e)
                 throw e
             case .notPaired, .other:

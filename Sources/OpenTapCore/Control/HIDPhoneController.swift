@@ -57,10 +57,12 @@ public final class HIDPhoneController: PhoneController, @unchecked Sendable {
     public var tapTolerance: Double = 2.5
     public var maxCorrections = 2
 
-    private let gate = ActionGate()
+    let gate = ActionGate()
     private let lock = NSLock()
     private var _lastScreenshotSize: CGSize?
-    private var _staticFrames = false
+    /// frameCount at which the source was last seen not advancing (a still screen, or a mock that never ticks).
+    /// Cleared as soon as the counter moves past it, so one quiet gap never disables fresh-frame waits for good.
+    private var _staticSince: Int?
     private var _pointerMisses = 0
 
     public init(frames: FrameSource, renderer: ScreenshotRenderer, recognizer: TextRecognizer, hid: HIDTransport,
@@ -72,7 +74,7 @@ public final class HIDPhoneController: PhoneController, @unchecked Sendable {
     // MARK: - PhoneController
 
     public func screenshot(includeText: Bool) async throws -> Screenshot {
-        guard let frame = frames.latestFrame else { throw noFrameError() }
+        let frame = try liveFrame()
         let number = frames.frameCount
         let rendered: RenderedScreenshot
         do { rendered = try renderer.render(frame) } catch {
@@ -85,6 +87,7 @@ public final class HIDPhoneController: PhoneController, @unchecked Sendable {
                                         fix: "Try again; if it keeps failing, call screenshot with include_text false")
             }
         }
+        if let text { noteLockState(text, screenHeight: Double(rendered.image.height)) }
         let size = CGSize(width: rendered.image.width, height: rendered.image.height)
         let changed: Bool = lock.withLock { let c = _lastScreenshotSize != size; _lastScreenshotSize = size; return c }
         if changed {
@@ -96,10 +99,13 @@ public final class HIDPhoneController: PhoneController, @unchecked Sendable {
 
     public func perform(_ action: PhoneAction) async throws -> ActionResult {
         try await gate.serialized {
+            let before = self.frames.latestFrame
             let (summary, settle) = try await self.execute(action)
             let shot = try await self.resultScreenshot(settleMs: settle)
-            self.log.info("control", summary)
-            return ActionResult(summary: summary, screenshot: shot)
+            let note = try self.checkOutcome(of: action, shot, before: before)
+            let full = summary + note
+            self.log.info("control", full)
+            return ActionResult(summary: full, screenshot: shot)
         }
     }
 
@@ -115,11 +121,22 @@ public final class HIDPhoneController: PhoneController, @unchecked Sendable {
         return try await gate.serialized {
             var summaries: [String] = []
             var lastSettle = 0
+            var lastBefore: CGImage?
             for (i, action) in actions.enumerated() {
                 do {
                     if i > 0 && lastSettle > 0 { try await self.sleep(ms: min(lastSettle, 400)) }
+                    lastBefore = self.frames.latestFrame
                     let (s, settle) = try await self.execute(action)
-                    summaries.append("\(i + 1). \(s)"); lastSettle = settle
+                    var note = ""
+                    if case .openApp = action, i < actions.count - 1 {
+                        // Later steps assume the app is open: check now rather than only at the end.
+                        let shot = try await self.resultScreenshot(settleMs: settle)
+                        note = try self.checkOutcome(of: action, shot, before: lastBefore)
+                        lastSettle = 0
+                    } else {
+                        lastSettle = settle
+                    }
+                    summaries.append("\(i + 1). \(s)\(note)")
                 } catch {
                     let e = OpenTapError.wrap(error, what: "\(action.name) failed")
                     let done = summaries.isEmpty ? "" : " (steps 1...\(i) completed)"
@@ -127,7 +144,14 @@ public final class HIDPhoneController: PhoneController, @unchecked Sendable {
                 }
             }
             let shot = try await self.resultScreenshot(settleMs: lastSettle)
-            let summary = "Ran \(actions.count) action\(actions.count == 1 ? "" : "s"): " + summaries.joined(separator: "; ")
+            let last = actions[actions.count - 1]
+            let note: String
+            do { note = try self.checkOutcome(of: last, shot, before: lastBefore) } catch {
+                let e = OpenTapError.wrap(error, what: "\(last.name) failed")
+                let done = actions.count > 1 ? " (steps 1...\(actions.count - 1) completed)" : ""
+                throw OpenTapError(e.code, what: "Step \(actions.count) (\(last.name)) failed: \(e.what)\(done)", why: e.why, fix: e.fix)
+            }
+            let summary = "Ran \(actions.count) action\(actions.count == 1 ? "" : "s"): " + summaries.joined(separator: "; ") + note
             self.log.info("control", summary)
             return ActionResult(summary: summary, screenshot: shot)
         }
@@ -316,7 +340,7 @@ public final class HIDPhoneController: PhoneController, @unchecked Sendable {
             throw OpenTapError(.notCalibrated, what: "Can't \(what): the saved calibration is unusable",
                                why: "It has too few valid pointer measurements", fix: "Run calibrate again with the iPhone unlocked")
         }
-        guard let frame = frames.latestFrame else { throw noFrameError() }
+        let frame = try liveFrame()
         let geo = try geometry(for: CGSize(width: frame.width, height: frame.height), frame: frame)
         let calAspect = Double(cal.screenshotSize.height / max(1, cal.screenshotSize.width))
         let aspect = Double(geo.screenshotSize.height / max(1, geo.screenshotSize.width))
@@ -498,10 +522,25 @@ public final class HIDPhoneController: PhoneController, @unchecked Sendable {
         try await send(.mouse(MouseReport(buttons: buttons, dx: dx, dy: dy)))
     }
 
+    /// Sends one report per `intervalMs`, scheduled by absolute deadline so the rhythm doesn't drift with send
+    /// latency (iOS acceleration depends on velocity, so calibration and later moves must share the same rhythm).
     func sendSteps(_ steps: [MouseStep], buttons: MouseButtons, intervalMs: Int) async throws {
+        guard intervalMs > 0 else {
+            for s in steps { try await sendMouse(s, buttons: buttons); await Task.yield() }
+            return
+        }
+        let clock = ContinuousClock()
+        let period = Duration.milliseconds(intervalMs)
+        var deadline = clock.now
         for s in steps {
             try await sendMouse(s, buttons: buttons)
-            try await sleep(ms: intervalMs)
+            deadline += period
+            let now = clock.now
+            if deadline > now {
+                try await Task.sleep(until: deadline, clock: clock)
+            } else if now - deadline > period * 4 {
+                deadline = now   // badly late (system stall): restart the rhythm instead of bursting to catch up
+            }
         }
     }
 
@@ -525,18 +564,28 @@ public final class HIDPhoneController: PhoneController, @unchecked Sendable {
 
     /// The next frame after `count`; sources that never advance frameCount (mocks) are detected and not waited on.
     func freshFrame(after count: Int) async throws -> CGImage {
-        let isStatic = lock.withLock { _staticFrames }
+        let now = frames.frameCount
+        let isStatic: Bool = lock.withLock {
+            // Any frame since static mode began means the source is live again: wait for real frames.
+            if let since = _staticSince, now > since { _staticSince = nil }
+            return _staticSince != nil
+        }
         if !isStatic {
             do { return try await frames.waitForFrame(after: count, timeout: timing.frameTimeout) } catch {
-                if frames.frameCount == count, frames.latestFrame != nil {
-                    lock.withLock { _staticFrames = true }
-                    log.debug("control", "Frame counter did not advance; not waiting for fresh frames")
+                let after = frames.frameCount
+                if after == count, frames.latestFrame != nil {
+                    lock.withLock { _staticSince = after }
+                    log.debug("control", "No new frame within \(timing.frameTimeout)s (still screen); using the latest until frames flow again")
                 }
             }
-        } else if frames.frameCount > count {
-            lock.withLock { _staticFrames = false }
         }
-        guard let f = frames.latestFrame else { throw noFrameError() }
+        return try liveFrame()
+    }
+
+    /// The latest frame, but only while capture is actually running: after an unplug or a capture error the
+    /// last picture is stale and must not be handed out as if it were live.
+    func liveFrame() throws -> CGImage {
+        guard case .running = frames.state.value, let f = frames.latestFrame else { throw noFrameError() }
         return f
     }
 
@@ -621,8 +670,14 @@ public final class HIDPhoneController: PhoneController, @unchecked Sendable {
         return Double(total) / Double(ga.pixels.count) > 3
     }
 
-    func fmt(_ v: Double) -> String {
-        v.rounded() == v ? String(Int(v)) : String(format: "%.1f", v)
+    func fmt(_ v: Double) -> String { Self.fmt(v) }
+
+    /// Never traps: Int(v) is only used for whole numbers well inside Int's range.
+    static func fmt(_ v: Double) -> String {
+        guard v.isFinite else { return v.isNaN ? "NaN" : (v < 0 ? "-infinity" : "infinity") }
+        if abs(v) < 1e15, v.rounded() == v { return String(Int(v)) }
+        if abs(v) < 1e15 { return String(format: "%.1f", v) }
+        return String(format: "%g", v)
     }
 }
 

@@ -20,6 +20,8 @@ public enum ManualSteps {
     public static let assistiveTouch = "On the iPhone open Settings > Accessibility > Touch > AssistiveTouch and turn it on"
     public static let trust = "Unlock the iPhone, unplug and replug the USB cable, then tap Trust on the \"Trust This Computer?\" alert and enter your passcode"
     public static let unlock = "Unlock your iPhone (Face ID, Touch ID or passcode) and keep it on the Home Screen"
+    /// After "Don't Trust": one fix, replug first, the reset only if no alert comes back.
+    public static let denied = "Unplug and replug the iPhone, unlock it and tap Trust when it asks. Only if no Trust alert appears after replugging: on the iPhone open Settings > General > Transfer or Reset iPhone > Reset > Reset Location & Privacy, then plug it back in"
     public static let resetTrust = "Unplug the iPhone, then on it open Settings > General > Transfer or Reset iPhone > Reset > Reset Location & Privacy, plug it back in and tap Trust"
 }
 
@@ -65,7 +67,7 @@ public enum AMDResult: Equatable, Sendable {
                                 fix: ManualSteps.unlock + ", then try again")
         case .denied:
             return OpenTapError(.notPaired, what: what, why: "\"Don't Trust\" was tapped on \(deviceName)",
-                                fix: ManualSteps.resetTrust)
+                                fix: ManualSteps.denied)
         case .pending:
             return OpenTapError(.notPaired, what: what,
                                 why: "\(deviceName) is still showing \"Trust This Computer?\"",

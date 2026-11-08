@@ -17,6 +17,9 @@ public enum CalibrationPlan {
     /// Small diagonal nudge that takes the pointer out of the corner so the whole dot is visible.
     public static let leadIn = MouseStep(6, 6)
     public static let leadInReports = 5
+    /// One wording for "where should the iPhone be while calibrating" (the wizard uses it too).
+    public static let plainScreenAdvice = "Unlock the iPhone and open Settings (a plain, light screen); busy wallpaper makes the pointer hard to see"
+    public static let plainScreenFix = "Open Settings on the iPhone (a plain, light screen), don't touch it, and run calibrate again"
 }
 
 extension HIDPhoneController {
@@ -33,7 +36,7 @@ extension HIDPhoneController {
     func runCalibration(progress: @escaping (CalibrationProgress) -> Void) async throws -> CalibrationData {
         try requireHID("calibrate")
         progress(CalibrationProgress(fraction: 0, message: "Preparing: keep the iPhone unlocked and don't touch it"))
-        guard let frame = frames.latestFrame else { throw noFrameError() }
+        let frame = try liveFrame()
         let geo = try geometry(for: CGSize(width: frame.width, height: frame.height), frame: frame)
         let interval = reportIntervalOverrideMs ?? CalibrationPlan.intervalMs
 
@@ -80,7 +83,7 @@ extension HIDPhoneController {
         guard let det = pointer.locate(in: landedFrame, hint: ctx.geometry.toFrame(centre), previous: parked) else {
             throw OpenTapError(.pointerNotFound, what: "Calibration check failed",
                                why: "After moving to the centre of the screen the pointer could not be found",
-                               fix: "Keep the iPhone on a plain screen (e.g. Settings) and run calibrate again")
+                               fix: CalibrationPlan.plainScreenFix)
         }
         pointerSeen()
         let p = geo.toScreenshot(det.point)

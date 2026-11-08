@@ -127,4 +127,42 @@ public enum MCPClientConfig {
     public static func findClaudeCLI(home: String = NSHomeDirectory(), fileManager: FileManager = .default) -> String? {
         claudeCandidatePaths(home: home).first { fileManager.isExecutableFile(atPath: $0) }
     }
+
+    /// What `claude mcp get opentap` says about an existing entry.
+    public struct ClaudeRegistration: Equatable, Sendable {
+        public var url: String?
+        /// "user", "local" or "project" (the value `claude mcp remove -s` takes).
+        public var scope: String?
+        public init(url: String?, scope: String?) { self.url = url; self.scope = scope }
+    }
+
+    /// Parses `claude mcp get <name>` output. nil when no such server is configured.
+    public static func parseClaudeGet(_ output: String) -> ClaudeRegistration? {
+        if output.range(of: "No MCP server named", options: .caseInsensitive) != nil { return nil }
+        var url: String?, scope: String?
+        for raw in output.components(separatedBy: .newlines) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.lowercased().hasPrefix("url:") {
+                url = line.dropFirst(4).trimmingCharacters(in: .whitespaces)
+            } else if line.lowercased().hasPrefix("scope:") {
+                let v = line.dropFirst(6).lowercased()
+                if v.contains("user") { scope = "user" } else if v.contains("project") { scope = "project" } else if v.contains("local") { scope = "local" }
+            } else if let r = line.range(of: "-s ") , line.contains("claude mcp remove") {
+                let word = line[r.upperBound...].prefix { $0.isLetter }
+                if !word.isEmpty { scope = String(word) }
+            }
+        }
+        guard url != nil || scope != nil else { return nil }
+        return ClaudeRegistration(url: url, scope: scope)
+    }
+
+    /// Same endpoint, ignoring a trailing slash and "localhost" vs "127.0.0.1".
+    public static func sameEndpoint(_ a: String, _ b: String) -> Bool {
+        func norm(_ s: String) -> String {
+            var t = s.trimmingCharacters(in: .whitespaces).lowercased().replacingOccurrences(of: "://localhost:", with: "://127.0.0.1:")
+            while t.hasSuffix("/") { t.removeLast() }
+            return t
+        }
+        return norm(a) == norm(b)
+    }
 }

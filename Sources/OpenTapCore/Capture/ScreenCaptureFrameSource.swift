@@ -86,7 +86,14 @@ public final class ScreenCaptureFrameSource: FrameSource {
     public var deviceName: String? { lock.withLock { currentName } }
 
     public func start() async throws {
-        if sessionQueue.sync(execute: { active }) { return }
+        // Already active with a healthy session: nothing to do. Active but failed/without a session (runtime error,
+        // attach refused, no-frame watchdog): fall through and look for the device again.
+        let healthy: Bool = sessionQueue.sync { active && session != nil }
+        if healthy, case .failed = state.value {
+            sessionQueue.sync { detachLocked() }
+        } else if healthy {
+            return
+        }
         state.send(.starting)
 
         try await ensureCameraPermission()
@@ -236,6 +243,8 @@ public final class ScreenCaptureFrameSource: FrameSource {
                                      why: "macOS reported a capture error: \(err?.localizedDescription ?? "unknown error")",
                                      fix: "Unplug and re-plug the iPhone; if it keeps happening, quit other apps that show the iPhone screen (QuickTime Player)")
                 self.log.error("capture", e)
+                // Tear the broken session down so Restart (or a replug, via wasConnected) can attach afresh.
+                self.detachLocked()
                 self.state.send(.failed(e))
             }
         })
@@ -291,7 +300,11 @@ public final class ScreenCaptureFrameSource: FrameSource {
         watchdog?.cancel(); watchdog = nil
         if let s = session, s.isRunning { s.stopRunning() }
         session = nil; device = nil; delegate = nil
-        lock.withLock { currentName = nil }
+        // Drop the last picture too: once the device is gone it is stale and must not be served as live.
+        lock.withLock {
+            currentName = nil
+            pixelBuffer = nil; cachedImage = nil; cachedCount = -1; size = nil; frameTimes.removeAll()
+        }
     }
 
     private func armWatchdog(deviceName: String) {

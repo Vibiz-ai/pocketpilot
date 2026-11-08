@@ -82,4 +82,11 @@ public protocol PhoneController: AnyObject {
     /// Parks, measures the acceleration curve, saves it to the CalibrationStore, returns it.
     func calibrate(progress: @escaping (CalibrationProgress) -> Void) async throws -> CalibrationData
     func status() async -> StatusSnapshot
+    /// One AssistiveTouch check (wiggle the mouse, look for the pointer), serialized with every other action.
+    /// Returns the pointer in frame pixels, or nil when none appeared.
+    func probePointer(dx: Int8) async throws -> CGPoint?
+}
+
+public extension PhoneController {
+    func probePointer(dx: Int8) async throws -> CGPoint? { nil }
 }
