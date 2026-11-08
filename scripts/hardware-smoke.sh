@@ -4,6 +4,8 @@
 # Before you start:
 #   1. scripts/build-app.sh && open build/OpenTap.app, and finish onboarding (all pills green).
 #   2. iPhone plugged in by USB, unlocked, on the Home Screen. Keep it unlocked (Auto-Lock: Never helps).
+#   3. Any other iPhone-control app (e.g. ScreenTap) is QUIT: it shares the USB capture and Bluetooth HID.
+#   Full plan: docs/TESTING.md > Real iPhone test plan.
 #
 #   scripts/hardware-smoke.sh [--url http://127.0.0.1:47900/mcp] [--no-calibrate] [--yes]
 #
@@ -20,7 +22,7 @@ while [ $# -gt 0 ]; do
     --url) URL="$2"; shift ;;
     --no-calibrate) CALIBRATE=0 ;;
     --yes) ASSUME_YES=1 ;;
-    -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "Unknown option $1 (see --help)"; exit 2 ;;
   esac
   shift
@@ -71,6 +73,16 @@ OpenTap hardware smoke test
 This drives your real iPhone: it will press Home, open Settings, scroll, type into Search and swipe.
 It does not change any setting, delete anything or send messages.
 EOF
+# Another phone-control app holds the same USB capture device and Bluetooth HID channels.
+OTHER="$(pgrep -il 'screentap' 2>/dev/null | grep -vi opentap || true)"
+if [ -n "$OTHER" ]; then
+  echo
+  echo "Another iPhone-control app is running:"; echo "$OTHER" | sed 's/^/    /'
+  echo "Why it matters: it holds the iPhone's USB screen capture and the Mac's Bluetooth HID channels, so OpenTap"
+  echo "gets no frames or the iPhone sends its input to the other app."
+  echo "Fix: quit it from its menu bar icon (don't force-kill it mid-session), relaunch OpenTap, then run this again."
+  [ "$ASSUME_YES" = 1 ] || exit 2
+fi
 if [ "$ASSUME_YES" = 0 ]; then read -r -p "Ready? The iPhone is unlocked on the Home Screen. [y/n] " go < /dev/tty; [ "$go" = y ] || exit 0; fi
 
 # --- 1. Server + status --------------------------------------------------------------------------
@@ -158,7 +170,18 @@ else
   NAMES+=("tap"); RESULTS+=(SKIP); NOTES+=("no OCR text on home screen")
 fi
 
-# --- 11. Batch ---------------------------------------------------------------------------------------
+# --- 11. Long press ----------------------------------------------------------------------------------
+step "long_press on an app icon (should open its quick-actions menu)"
+if [ -n "${X:-}" ] && [ -n "${Y:-}" ]; then
+  LINES_SHOWN=4 call long_press "{\"x\":$X,\"y\":$((Y - 40)),\"duration_ms\":900}"
+  if [ $? -eq 0 ]; then ask "long_press" "Did a menu (or jiggle mode) appear for that icon?"; else tool_failed "long_press"; fi
+  LINES_SHOWN=2 call press_key '{"key":"escape"}' >/dev/null
+  LINES_SHOWN=2 call press_key '{"key":"home"}' >/dev/null
+else
+  NAMES+=("long_press"); RESULTS+=(SKIP); NOTES+=("no icon position from step 10")
+fi
+
+# --- 12. Batch ---------------------------------------------------------------------------------------
 step "batch: Home, Search, type \"Settings\", return"
 LINES_SHOWN=6 call batch '{"actions":[{"action":"press_key","key":"home"},{"action":"press_key","key":"cmd+space"},{"action":"type_text","text":"Settings"},{"action":"press_key","key":"return"}]}'
 if [ $? -eq 0 ]; then ask "batch" "Did Settings open in one go?"; else tool_failed "batch"; fi

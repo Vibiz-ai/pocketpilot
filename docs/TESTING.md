@@ -107,7 +107,60 @@ python3 scripts/mcp_e2e.py --url http://127.0.0.1:47900/mcp --live      # real p
 python3 scripts/mcp_e2e.py call screenshot '{"include_text":true}' --save-image /tmp/s.jpg
 ```
 
-## Hardware smoke test (humans only)
+## Real iPhone test plan (humans only)
+
+Everything above runs on a simulated phone. These are the steps for the first run on a real iPhone. Write down
+what you see at each step (a screenshot of the OpenTap window is enough) so a failure can be reproduced.
+
+### 0. Before you start: quit any other phone-control app
+
+If another app that drives the iPhone is installed (for example ScreenTap), **quit it completely first**
+(menu bar icon > Quit, then check `pgrep -il screentap` prints nothing). It uses the same three things
+OpenTap needs, and only one app can hold them at a time:
+
+- the **USB screen capture device** (the second app gets no frames),
+- the Mac's **Bluetooth HID role and PSM 0x11/0x13** (the second app's L2CAP registration never sees the
+  iPhone, or the iPhone talks to the wrong HID record),
+- the **pointer calibration** of the phone (both apps assume they own the pointer).
+
+The iPhone may already list this Mac under Settings > Bluetooth > My Devices from the other app. It will try to
+reconnect to that entry and may reuse the other app's cached HID descriptor. If pairing in step 4 below
+connects but keys or pointer do nothing, on the iPhone tap the (i) next to this Mac > Forget This Device and
+pair "OpenTap" again. That is your call to make: it also means the other app has to be paired again later.
+When you are done testing, quit OpenTap before reopening the other app.
+
+Also: iPhone on the latest iOS you want to support, a data USB cable (not charge-only), Mac Bluetooth on,
+iPhone Auto-Lock set to Never for the session (Settings > Display & Brightness > Auto-Lock).
+
+### 1. Build and launch
+
+```sh
+scripts/qa.sh --scratch .build-hw        # must print QA PASSED
+scripts/build-app.sh .build-hw           # build/OpenTap.app, ad-hoc signed
+open build/OpenTap.app
+```
+
+### 2. Onboarding, step by step
+
+Each step should turn green by itself. If one doesn't, its message must say what failed, why and how to fix it
+(a bare "error" is a bug: report it).
+
+| Step | Do | Expect (green check) | Main risk to note |
+|---|---|---|---|
+| 1 Permissions | Click the Camera and Bluetooth buttons, Allow both | Both rows green without relaunching | Prompt not shown for an ad-hoc signed app; denied -> "Open System Settings" goes to the right pane |
+| 2 Plug in iPhone | Plug in, unlock, tap Trust on the phone | Live device name, model and iOS version, green | MobileDevice.framework symbols missing/changed: must fall back to manual instructions, not crash |
+| 3 Screen | Nothing | Live preview of the phone, correct orientation, not stretched | Capture device not appearing until replug; portrait/landscape aspect |
+| 4 Bluetooth | iPhone Settings > Bluetooth > tap "OpenTap", accept | Green once both HID channels open | iOS rejecting the SDP record / "Pairing unsuccessful"; connects then drops after a few seconds |
+| 5 AssistiveTouch | Let OpenTap enable it over USB; else follow the shown path | Pointer dot detected on the preview, green | Lockdown toggle ignored on this iOS; pointer not detected on a light or dark wallpaper |
+| 6 Calibration | Don't touch the phone (~30 s) | Progress bar, then green | Pointer acceleration differs from the model; parking not reaching the corner |
+| 7 Agent | Copy the `claude mcp add ...` line or click the button, then "Test it" | "Test it" passes with the device name | Port 47900 already taken |
+
+Then quit and relaunch OpenTap: it should skip onboarding and show the main window with all six pills (USB,
+Screen, Bluetooth, AssistiveTouch, Calibration, MCP) green. Unplug and replug the USB cable and toggle the
+iPhone's Bluetooth off/on once: the pills should go yellow/red with a fix and come back by themselves.
+"Run Setup Again..." in the app menu should restart the wizard.
+
+### 3. Drive it: the smoke script
 
 With OpenTap.app running, onboarding finished and the iPhone unlocked on the Home Screen:
 
@@ -119,7 +172,13 @@ scripts/hardware-smoke.sh --no-calibrate
 It checks status, screenshot + OCR, Home, calibration, cmd+space + typing, open_app, scroll, tap_text,
 edge swipes (Back, Home), a tap at OCR coordinates and a batch. It never changes settings or sends anything.
 Attach the printed report to the PR. (`--yes` auto-answers; only useful for dry-running against
-`opentap-mock --calibrated`.)
+`opentap-mock --calibrated`.) It warns and stops if another phone-control app is still running.
+
+### 4. Report
+
+Attach to the issue/PR: the smoke report, the two saved screenshots, the iPhone model + iOS version, the macOS
+version, `~/Library/Application Support/OpenTap/calibration.json`, and the OpenTap log (main window > Log,
+with debug on) for any step that failed.
 
 ## Writing tests
 
