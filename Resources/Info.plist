@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key><string>OpenTap</string>
+	<key>CFBundleDisplayName</key><string>OpenTap</string>
+	<key>CFBundleIdentifier</key><string>dev.opentap.OpenTap</string>
+	<key>CFBundleExecutable</key><string>OpenTap</string>
+	<key>CFBundlePackageType</key><string>APPL</string>
+	<key>CFBundleShortVersionString</key><string>0.1.0</string>
+	<key>CFBundleVersion</key><string>1</string>
+	<key>LSMinimumSystemVersion</key><string>14.0</string>
+	<key>NSHighResolutionCapable</key><true/>
+	<key>NSPrincipalClass</key><string>NSApplication</string>
+	<key>NSCameraUsageDescription</key><string>OpenTap shows your iPhone's screen, which macOS delivers as a camera-like USB capture device.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key><string>OpenTap acts as a Bluetooth keyboard and mouse so your agent can tap and type on your iPhone.</string>
+</dict>
+</plist>
