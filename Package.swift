@@ -2,17 +2,17 @@
 import PackageDescription
 
 let package = Package(
-    name: "OpenTap",
+    name: "PocketPilot",
     platforms: [.macOS(.v14)],
     products: [
-        .library(name: "OpenTapCore", targets: ["OpenTapCore"]),
-        .executable(name: "OpenTap", targets: ["OpenTap"]),
-        .executable(name: "opentap-mock", targets: ["opentap-mock"]),
+        .library(name: "PocketPilotCore", targets: ["PocketPilotCore"]),
+        .executable(name: "PocketPilot", targets: ["PocketPilot"]),
+        .executable(name: "pocketpilot-mock", targets: ["pocketpilot-mock"]),
     ],
     targets: [
         .target(
-            name: "OpenTapCore",
-            path: "Sources/OpenTapCore",
+            name: "PocketPilotCore",
+            path: "Sources/PocketPilotCore",
             linkerSettings: [
                 .linkedFramework("AVFoundation"),
                 .linkedFramework("CoreMediaIO"),
@@ -25,19 +25,19 @@ let package = Package(
             ]
         ),
         .executableTarget(
-            name: "OpenTap",
-            dependencies: ["OpenTapCore"],
-            path: "Sources/OpenTap"
+            name: "PocketPilot",
+            dependencies: ["PocketPilotCore"],
+            path: "Sources/PocketPilot"
         ),
         .executableTarget(
-            name: "opentap-mock",
-            dependencies: ["OpenTapCore"],
-            path: "Sources/opentap-mock"
+            name: "pocketpilot-mock",
+            dependencies: ["PocketPilotCore"],
+            path: "Sources/pocketpilot-mock"
         ),
         .testTarget(
-            name: "OpenTapCoreTests",
-            dependencies: ["OpenTapCore"],
-            path: "Tests/OpenTapCoreTests"
+            name: "PocketPilotCoreTests",
+            dependencies: ["PocketPilotCore"],
+            path: "Tests/PocketPilotCoreTests"
         ),
     ],
     swiftLanguageVersions: [.v5]

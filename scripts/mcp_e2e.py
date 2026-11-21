@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""End-to-end MCP check for OpenTap (owner: qa).
+"""End-to-end MCP check for PocketPilot (owner: qa).
 
-Drives an OpenTap MCP endpoint over Streamable HTTP (JSON-RPC 2.0 over POST, Mcp-Session-Id) and asserts
-what comes back. Against `opentap-mock` (the default) it knows the simulated iPhone's screens, so it checks
+Drives an PocketPilot MCP endpoint over Streamable HTTP (JSON-RPC 2.0 over POST, Mcp-Session-Id) and asserts
+what comes back. Against `pocketpilot-mock` (the default) it knows the simulated iPhone's screens, so it checks
 real outcomes: tap_text opens the app, typed text shows up, scroll moves the list, and so on.
 
     python3 scripts/mcp_e2e.py --url http://127.0.0.1:47901/mcp           # mock (default)
@@ -78,7 +78,7 @@ class Client:
 
     def initialize(self):
         resp, headers = self.rpc("initialize", {"protocolVersion": PROTOCOL, "capabilities": {},
-                                                "clientInfo": {"name": "opentap-qa", "version": "1"}}, session=False)
+                                                "clientInfo": {"name": "pocketpilot-qa", "version": "1"}}, session=False)
         self.session = next((v for k, v in headers.items() if k.lower() == "mcp-session-id"), None)
         return resp
 
@@ -174,7 +174,7 @@ def main():
     ap.add_argument("--live", action="store_true", help="real phone: skip checks that assume the mock's screens")
     ap.add_argument("--timeout", type=float, default=180)
     ap.add_argument("--scenario", choices=["normal", "no-bluetooth", "at-off", "no-frames"], default="normal",
-                    help="the fault the mock was started with (opentap-mock --fault ...): checks the error path instead")
+                    help="the fault the mock was started with (pocketpilot-mock --fault ...): checks the error path instead")
     ap.add_argument("-v", "--verbose", action="store_true")
     a = ap.parse_args()
 
@@ -187,7 +187,7 @@ def main():
         assert "result" in resp, "initialize failed: %s" % resp
         res = resp["result"]
         assert res.get("protocolVersion") == PROTOCOL, "protocolVersion %r" % res.get("protocolVersion")
-        assert res.get("serverInfo", {}).get("name") == "opentap", "serverInfo %r" % res.get("serverInfo")
+        assert res.get("serverInfo", {}).get("name") == "pocketpilot", "serverInfo %r" % res.get("serverInfo")
         assert "tools" in res.get("capabilities", {}), "no tools capability"
         assert c.session, "no Mcp-Session-Id header on the initialize response"
         return "session %s..." % c.session[:8]
@@ -270,8 +270,8 @@ def main():
         pos = r.find("Tap to type")
         assert pos, "no text field on screen: %s" % r.labels()
         expect_ok(c.call("tap", {"x": pos[0], "y": pos[1]}), "tap the field")
-        r = expect_ok(c.call("type_text", {"text": "Hello OpenTap 42!", "submit": True}), "type_text")
-        assert r.has("Hello OpenTap 42!"), "typed text not on screen: %s" % r.labels()
+        r = expect_ok(c.call("type_text", {"text": "Hello PocketPilot 42!", "submit": True}), "type_text")
+        assert r.has("Hello PocketPilot 42!"), "typed text not on screen: %s" % r.labels()
         assert r.has("Tap to type"), "submit should have saved and cleared the field: %s" % r.labels()
         return r.brief()
 
@@ -373,13 +373,13 @@ def main():
         return f
 
     if a.scenario != "normal":
-        print("OpenTap MCP fault scenario '%s' against %s" % (a.scenario, a.url))
+        print("PocketPilot MCP fault scenario '%s' against %s" % (a.scenario, a.url))
         if not run.check("initialize", initialize):
             run.table()
             return 1
         c.notify("notifications/initialized")
         if a.scenario == "no-bluetooth":
-            run.check("status shows Bluetooth", fault_status("Bluetooth", ["Bluetooth", "OpenTap"]))
+            run.check("status shows Bluetooth", fault_status("Bluetooth", ["Bluetooth", "PocketPilot"]))
             run.check("press_key fails helpfully", fault_action("press_key", {"key": "home"}, ["hidNotConnected"], ["Bluetooth"]))
         elif a.scenario == "at-off":
             run.check("calibrate fails helpfully", fault_action("calibrate", {}, ["assistiveTouchOff", "pointerNotFound", "calibrationFailed"],
@@ -391,7 +391,7 @@ def main():
                                                                  ["USB", "unlock", "cable", "iPhone"]))
         return 0 if run.table() else 1
 
-    print("OpenTap MCP end-to-end against %s%s" % (a.url, " (live phone)" if a.live else " (mock)"))
+    print("PocketPilot MCP end-to-end against %s%s" % (a.url, " (live phone)" if a.live else " (mock)"))
     if not run.check("initialize", initialize):
         run.table()
         return 1
@@ -435,8 +435,8 @@ def call_main(argv):
         c.notify("notifications/initialized")
         r = c.call(a.tool, json.loads(a.arguments))
     except (urllib.error.URLError, ConnectionError, OSError, MCPError) as e:
-        print("Couldn't reach OpenTap at %s: %s" % (a.url, e))
-        print("Fix: open OpenTap.app, finish onboarding, and check the MCP pill is green.")
+        print("Couldn't reach PocketPilot at %s: %s" % (a.url, e))
+        print("Fix: open PocketPilot.app, finish onboarding, and check the MCP pill is green.")
         return 2
     if a.save_image and r.images:
         img = r.images[0]

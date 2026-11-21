@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
-# OpenTap hardware smoke test (owner: qa). A guided checklist for a HUMAN with a real iPhone. Not for CI.
+# PocketPilot hardware smoke test (owner: qa). A guided checklist for a HUMAN with a real iPhone. Not for CI.
 #
 # Before you start:
-#   1. scripts/build-app.sh && open build/OpenTap.app, and finish onboarding (all pills green).
+#   1. scripts/build-app.sh && open build/PocketPilot.app, and finish onboarding (all pills green).
 #   2. iPhone plugged in by USB, unlocked, on the Home Screen. Keep it unlocked (Auto-Lock: Never helps).
 #   3. Any other iPhone-control app (e.g. ScreenTap) is QUIT: it shares the USB capture and Bluetooth HID.
 #   Full plan: docs/TESTING.md > Real iPhone test plan.
 #
 #   scripts/hardware-smoke.sh [--url http://127.0.0.1:47900/mcp] [--no-calibrate] [--yes]
 #
-# Each step drives the phone through OpenTap's MCP server, then asks you what happened on the iPhone.
+# Each step drives the phone through PocketPilot's MCP server, then asks you what happened on the iPhone.
 # Answers: y = it worked, n = it didn't (you can type a note), s = skip. A report is saved at the end.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-URL="${OPENTAP_URL:-http://127.0.0.1:47900/mcp}"
+URL="${POCKETPILOT_URL:-http://127.0.0.1:47900/mcp}"
 CALIBRATE=1
 ASSUME_YES=0
 while [ $# -gt 0 ]; do
@@ -28,7 +28,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-OUT="$(mktemp -d "${TMPDIR:-/tmp}/opentap-smoke.XXXXXX")"
+OUT="$(mktemp -d "${TMPDIR:-/tmp}/pocketpilot-smoke.XXXXXX")"
 REPORT="$OUT/report.txt"
 NAMES=(); RESULTS=(); NOTES=()
 STEP=0
@@ -66,7 +66,7 @@ tool_failed() { # name -> records an automatic FAIL with the tool's error
 step() { STEP=$((STEP + 1)); say "$1"; }
 
 cat <<EOF
-OpenTap hardware smoke test
+PocketPilot hardware smoke test
   MCP endpoint: $URL
   Output:       $OUT
 
@@ -74,13 +74,13 @@ This drives your real iPhone: it will press Home, open Settings, scroll, type in
 It does not change any setting, delete anything or send messages.
 EOF
 # Another phone-control app holds the same USB capture device and Bluetooth HID channels.
-OTHER="$(pgrep -il 'screentap' 2>/dev/null | grep -vi opentap || true)"
+OTHER="$(pgrep -il 'screentap' 2>/dev/null | grep -vi pocketpilot || true)"
 if [ -n "$OTHER" ]; then
   echo
   echo "Another iPhone-control app is running:"; echo "$OTHER" | sed 's/^/    /'
-  echo "Why it matters: it holds the iPhone's USB screen capture and the Mac's Bluetooth HID channels, so OpenTap"
+  echo "Why it matters: it holds the iPhone's USB screen capture and the Mac's Bluetooth HID channels, so PocketPilot"
   echo "gets no frames or the iPhone sends its input to the other app."
-  echo "Fix: quit it from its menu bar icon (don't force-kill it mid-session), relaunch OpenTap, then run this again."
+  echo "Fix: quit it from its menu bar icon (don't force-kill it mid-session), relaunch PocketPilot, then run this again."
   [ "$ASSUME_YES" = 1 ] || exit 2
 fi
 if [ "$ASSUME_YES" = 0 ]; then read -r -p "Ready? The iPhone is unlocked on the Home Screen. [y/n] " go < /dev/tty; [ "$go" = y ] || exit 0; fi
@@ -89,8 +89,8 @@ if [ "$ASSUME_YES" = 0 ]; then read -r -p "Ready? The iPhone is unlocked on the 
 step "MCP server and status"
 LINES_SHOWN=12 call status '{}'
 case $? in
-  2) info "OpenTap isn't answering. Open OpenTap.app (and finish onboarding), then run this again."; exit 2 ;;
-  0) ask "status" "Does this match the OpenTap window (USB, Screen, Bluetooth, AssistiveTouch all green)?" ;;
+  2) info "PocketPilot isn't answering. Open PocketPilot.app (and finish onboarding), then run this again."; exit 2 ;;
+  0) ask "status" "Does this match the PocketPilot window (USB, Screen, Bluetooth, AssistiveTouch all green)?" ;;
   *) tool_failed "status" ;;
 esac
 
@@ -121,8 +121,8 @@ fi
 step "Keyboard: cmd+space opens Search, then typing"
 LINES_SHOWN=3 call press_key '{"key":"cmd+space"}'
 if [ $? -eq 0 ]; then
-  LINES_SHOWN=8 call type_text '{"text":"OpenTap test 123"}'
-  if [ $? -eq 0 ]; then ask "typing" "Is Search open with exactly \"OpenTap test 123\" typed in it?"; else tool_failed "typing"; fi
+  LINES_SHOWN=8 call type_text '{"text":"PocketPilot test 123"}'
+  if [ $? -eq 0 ]; then ask "typing" "Is Search open with exactly \"PocketPilot test 123\" typed in it?"; else tool_failed "typing"; fi
 else tool_failed "spotlight"; fi
 LINES_SHOWN=2 call press_key '{"key":"escape"}' >/dev/null
 LINES_SHOWN=2 call press_key '{"key":"home"}' >/dev/null
@@ -189,7 +189,7 @@ LINES_SHOWN=2 call press_key '{"key":"home"}' >/dev/null
 
 # --- Report -----------------------------------------------------------------------------------------
 {
-  echo "OpenTap hardware smoke test - $(date)"
+  echo "PocketPilot hardware smoke test - $(date)"
   echo "Endpoint: $URL"
   echo "macOS: $(sw_vers -productVersion 2>/dev/null)  Mac: $(sysctl -n hw.model 2>/dev/null)"
   echo

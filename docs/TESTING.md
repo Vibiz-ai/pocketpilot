@@ -1,6 +1,6 @@
-# Testing OpenTap
+# Testing PocketPilot
 
-OpenTap drives real hardware (USB screen capture, Bluetooth HID, lockdown over USB), so almost everything is
+PocketPilot drives real hardware (USB screen capture, Bluetooth HID, lockdown over USB), so almost everything is
 tested against a **simulated iPhone** (`MockPhone`) instead. Only the last step, the hardware smoke test, needs
 a human with a phone.
 
@@ -9,7 +9,7 @@ a human with a phone.
 | Unit | Shared contracts, each module's own tests | `swift test --scratch-path .build-<you>` | no |
 | Mock device | The simulated iPhone itself | `swift test --filter MockDeviceTests` | no |
 | Integration | Real Control + Capture + Vision + MCP against the mock | `swift test --filter IntegrationTests` | no |
-| MCP end-to-end | `opentap-mock` + JSON-RPC over HTTP, incl. fault scenarios | `scripts/qa.sh` | no |
+| MCP end-to-end | `pocketpilot-mock` + JSON-RPC over HTTP, incl. fault scenarios | `scripts/qa.sh` | no |
 | Hardware smoke | Guided checklist on a real iPhone | `scripts/hardware-smoke.sh` | yes |
 
 ## The QA gate: `scripts/qa.sh`
@@ -26,10 +26,10 @@ It exits non-zero if any row fails. Logs go to a temp dir printed at the end (`b
 `mock-<port>.log`, `e2e-<port>.log`).
 
 Integration tests that hit a module still throwing `.notImplemented` are **skipped** by default and **fail**
-with `--strict` (`OPENTAP_STRICT_INTEGRATION=1`). Everything else, including a wrong result from a module
+with `--strict` (`POCKETPILOT_STRICT_INTEGRATION=1`). Everything else, including a wrong result from a module
 that is implemented, is a real failure.
 
-## The simulated iPhone (`Sources/OpenTapCore/Mock`)
+## The simulated iPhone (`Sources/PocketPilotCore/Mock`)
 
 `MockPhone` renders a 1206x2622 iPhone screen with CoreGraphics and reacts to HID reports the way iOS does:
 
@@ -60,7 +60,7 @@ The Mock components wrap one phone: `MockFrameSource` (60 fps frame counter, fra
 ### Faults
 
 Set them on the phone (`phone.isLocked = true`, `phone.apply([.locked, .assistiveTouchOff])`) or on the
-command line (`opentap-mock --fault locked,at-off`, or `OPENTAP_MOCK_FAULTS`):
+command line (`pocketpilot-mock --fault locked,at-off`, or `POCKETPILOT_MOCK_FAULTS`):
 
 | Fault | Simulates | Expected behaviour |
 |---|---|---|
@@ -77,19 +77,19 @@ command line (`opentap-mock --fault locked,at-off`, or `OPENTAP_MOCK_FAULTS`):
 | `bluetooth-off` | Mac Bluetooth off | HID `unavailable(bluetoothUnavailable)` |
 | `no-mobiledevice` | MobileDevice.framework missing | device link `unavailable` with manual steps |
 
-## `opentap-mock`
+## `pocketpilot-mock`
 
-A headless OpenTap: the real controller and MCP server on top of the simulated phone.
+A headless PocketPilot: the real controller and MCP server on top of the simulated phone.
 
 ```sh
-swift run --scratch-path .build-me opentap-mock               # http://127.0.0.1:47901/mcp
-opentap-mock --port 48000 --calibrated                         # skip calibration (exact curve preloaded)
-opentap-mock --fault no-bluetooth                              # error paths
-opentap-mock --ocr vision                                      # real Vision OCR on the rendered screen
-claude mcp add --transport http opentap-mock http://127.0.0.1:47901/mcp   # drive it from an agent
+swift run --scratch-path .build-me pocketpilot-mock               # http://127.0.0.1:47901/mcp
+pocketpilot-mock --port 48000 --calibrated                         # skip calibration (exact curve preloaded)
+pocketpilot-mock --fault no-bluetooth                              # error paths
+pocketpilot-mock --ocr vision                                      # real Vision OCR on the rendered screen
+claude mcp add --transport http pocketpilot-mock http://127.0.0.1:47901/mcp   # drive it from an agent
 ```
 
-It prints `opentap-mock listening on <url>` once ready and exits cleanly on SIGINT/SIGTERM.
+It prints `pocketpilot-mock listening on <url>` once ready and exits cleanly on SIGINT/SIGTERM.
 
 ## MCP end-to-end: `scripts/mcp_e2e.py`
 
@@ -110,13 +110,13 @@ python3 scripts/mcp_e2e.py call screenshot '{"include_text":true}' --save-image 
 ## Real iPhone test plan (humans only)
 
 Everything above runs on a simulated phone. These are the steps for the first run on a real iPhone. Write down
-what you see at each step (a screenshot of the OpenTap window is enough) so a failure can be reproduced.
+what you see at each step (a screenshot of the PocketPilot window is enough) so a failure can be reproduced.
 
 ### 0. Before you start: quit any other phone-control app
 
 If another app that drives the iPhone is installed (for example ScreenTap), **quit it completely first**
 (menu bar icon > Quit, then check `pgrep -il screentap` prints nothing). It uses the same three things
-OpenTap needs, and only one app can hold them at a time:
+PocketPilot needs, and only one app can hold them at a time:
 
 - the **USB screen capture device** (the second app gets no frames),
 - the Mac's **Bluetooth HID role and PSM 0x11/0x13** (the second app's L2CAP registration never sees the
@@ -126,8 +126,8 @@ OpenTap needs, and only one app can hold them at a time:
 The iPhone may already list this Mac under Settings > Bluetooth > My Devices from the other app. It will try to
 reconnect to that entry and may reuse the other app's cached HID descriptor. If pairing in step 4 below
 connects but keys or pointer do nothing, on the iPhone tap the (i) next to this Mac > Forget This Device and
-pair "OpenTap" again. That is your call to make: it also means the other app has to be paired again later.
-When you are done testing, quit OpenTap before reopening the other app.
+pair "PocketPilot" again. That is your call to make: it also means the other app has to be paired again later.
+When you are done testing, quit PocketPilot before reopening the other app.
 
 Also: iPhone on the latest iOS you want to support, a data USB cable (not charge-only), Mac Bluetooth on,
 iPhone Auto-Lock set to Never for the session (Settings > Display & Brightness > Auto-Lock).
@@ -136,8 +136,8 @@ iPhone Auto-Lock set to Never for the session (Settings > Display & Brightness >
 
 ```sh
 scripts/qa.sh --scratch .build-hw        # must print QA PASSED
-scripts/build-app.sh .build-hw           # build/OpenTap.app, ad-hoc signed
-open build/OpenTap.app
+scripts/build-app.sh .build-hw           # build/PocketPilot.app, ad-hoc signed
+open build/PocketPilot.app
 ```
 
 ### 2. Onboarding, step by step
@@ -150,19 +150,19 @@ Each step should turn green by itself. If one doesn't, its message must say what
 | 1 Permissions | Click the Camera and Bluetooth buttons, Allow both | Both rows green without relaunching | Prompt not shown for an ad-hoc signed app; denied -> "Open System Settings" goes to the right pane |
 | 2 Plug in iPhone | Plug in, unlock, tap Trust on the phone | Live device name, model and iOS version, green | MobileDevice.framework symbols missing/changed: must fall back to manual instructions, not crash |
 | 3 Screen | Nothing | Live preview of the phone, correct orientation, not stretched | Capture device not appearing until replug; portrait/landscape aspect |
-| 4 Bluetooth | iPhone Settings > Bluetooth > tap "OpenTap", accept | Green once both HID channels open | iOS rejecting the SDP record / "Pairing unsuccessful"; connects then drops after a few seconds |
-| 5 AssistiveTouch | Let OpenTap enable it over USB; else follow the shown path | Pointer dot detected on the preview, green | Lockdown toggle ignored on this iOS; pointer not detected on a light or dark wallpaper |
+| 4 Bluetooth | iPhone Settings > Bluetooth > tap "PocketPilot", accept | Green once both HID channels open | iOS rejecting the SDP record / "Pairing unsuccessful"; connects then drops after a few seconds |
+| 5 AssistiveTouch | Let PocketPilot enable it over USB; else follow the shown path | Pointer dot detected on the preview, green | Lockdown toggle ignored on this iOS; pointer not detected on a light or dark wallpaper |
 | 6 Calibration | Don't touch the phone (~30 s) | Progress bar, then green | Pointer acceleration differs from the model; parking not reaching the corner |
 | 7 Agent | Copy the `claude mcp add ...` line or click the button, then "Test it" | "Test it" passes with the device name | Port 47900 already taken |
 
-Then quit and relaunch OpenTap: it should skip onboarding and show the main window with all six pills (USB,
+Then quit and relaunch PocketPilot: it should skip onboarding and show the main window with all six pills (USB,
 Screen, Bluetooth, AssistiveTouch, Calibration, MCP) green. Unplug and replug the USB cable and toggle the
 iPhone's Bluetooth off/on once: the pills should go yellow/red with a fix and come back by themselves.
 "Run Setup Again..." in the app menu should restart the wizard.
 
 ### 3. Drive it: the smoke script
 
-With OpenTap.app running, onboarding finished and the iPhone unlocked on the Home Screen:
+With PocketPilot.app running, onboarding finished and the iPhone unlocked on the Home Screen:
 
 ```sh
 scripts/hardware-smoke.sh            # asks y/n/s after each step, saves a report + screenshots
@@ -172,17 +172,17 @@ scripts/hardware-smoke.sh --no-calibrate
 It checks status, screenshot + OCR, Home, calibration, cmd+space + typing, open_app, scroll, tap_text,
 edge swipes (Back, Home), a tap at OCR coordinates and a batch. It never changes settings or sends anything.
 Attach the printed report to the PR. (`--yes` auto-answers; only useful for dry-running against
-`opentap-mock --calibrated`.) It warns and stops if another phone-control app is still running.
+`pocketpilot-mock --calibrated`.) It warns and stops if another phone-control app is still running.
 
 ### 4. Report
 
 Attach to the issue/PR: the smoke report, the two saved screenshots, the iPhone model + iOS version, the macOS
-version, `~/Library/Application Support/OpenTap/calibration.json`, and the OpenTap log (main window > Log,
+version, `~/Library/Application Support/PocketPilot/calibration.json`, and the PocketPilot log (main window > Log,
 with debug on) for any step that failed.
 
 ## Writing tests
 
-- Put module tests in `Tests/OpenTapCoreTests/<Module>/`. Use `OpenTapEnvironment.mock(...)` and a
+- Put module tests in `Tests/PocketPilotCoreTests/<Module>/`. Use `PocketPilotEnvironment.mock(...)` and a
   `MockPhone` instead of hardware, and assert on the phone's state (`screen`, `gestures`, ...), not just on
   return values.
 - Set `HIDPhoneController.timing = .fast` and `reportIntervalOverrideMs = 0` to keep controller tests quick,

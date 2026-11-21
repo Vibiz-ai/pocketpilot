@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# OpenTap QA gate (owner: qa). Never touches real hardware: everything runs against the simulated iPhone.
+# PocketPilot QA gate (owner: qa). Never touches real hardware: everything runs against the simulated iPhone.
 #
-#   scripts/qa.sh                 build + unit/integration tests + MCP end-to-end against opentap-mock
+#   scripts/qa.sh                 build + unit/integration tests + MCP end-to-end against pocketpilot-mock
 #   scripts/qa.sh --strict        also fail integration tests whose module is still a stub (integrator mode)
 #   scripts/qa.sh --no-tests      skip `swift test` (build + MCP end-to-end only)
 #   scripts/qa.sh --filter NAME   pass a test filter to `swift test` (e.g. MockDeviceTests)
 #   scripts/qa.sh --scratch DIR   SwiftPM scratch path (default .build; use your own when builds run in parallel)
-#   scripts/qa.sh --port N        first port for opentap-mock (default 47990; fault scenarios use N+1...)
+#   scripts/qa.sh --port N        first port for pocketpilot-mock (default 47990; fault scenarios use N+1...)
 #
 # Prints a PASS/FAIL table and exits non-zero if anything failed.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
 SCRATCH=".build"
-PORT="${OPENTAP_QA_PORT:-47990}"
+PORT="${POCKETPILOT_QA_PORT:-47990}"
 RUN_TESTS=1
 STRICT=0
 FILTER=""
@@ -31,7 +31,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-LOGDIR="$(mktemp -d "${TMPDIR:-/tmp}/opentap-qa.XXXXXX")"
+LOGDIR="$(mktemp -d "${TMPDIR:-/tmp}/pocketpilot-qa.XXXXXX")"
 NAMES=(); RESULTS=(); NOTES=()
 record() { NAMES+=("$1"); RESULTS+=("$2"); NOTES+=("$3"); }
 MOCK_PIDS=()
@@ -52,12 +52,12 @@ else
 fi
 
 BIN_DIR="$(swift build --scratch-path "$SCRATCH" --show-bin-path 2>/dev/null)"
-MOCK="$BIN_DIR/opentap-mock"
+MOCK="$BIN_DIR/pocketpilot-mock"
 
 # 2. Tests -------------------------------------------------------------------------------------------
 if [ "$RUN_TESTS" = 1 ] && [ "${RESULTS[0]}" = PASS ]; then
   bold "swift test --scratch-path $SCRATCH${FILTER:+ --filter $FILTER}"
-  export OPENTAP_STRICT_INTEGRATION=$STRICT
+  export POCKETPILOT_STRICT_INTEGRATION=$STRICT
   if [ -n "$FILTER" ]; then
     swift test --scratch-path "$SCRATCH" --filter "$FILTER" > "$LOGDIR/test.log" 2>&1; TEST_RC=$?
   else
@@ -66,7 +66,7 @@ if [ "$RUN_TESTS" = 1 ] && [ "${RESULTS[0]}" = PASS ]; then
   grep -E "error:|' failed|skipped|Executed .* tests" "$LOGDIR/test.log" | grep -v "^Test Suite" | tail -40
   SUMMARY="$(grep -E 'Executed [0-9]+ tests' "$LOGDIR/test.log" | tail -1 | sed 's/^[[:space:]]*//')"
   SKIPPED="$(grep -cE "^Test Case .* skipped" "$LOGDIR/test.log" || true)"
-  FAILED_TESTS="$(grep -E "^Test Case .* failed" "$LOGDIR/test.log" | sed -E "s/.*\[OpenTapCoreTests\.([A-Za-z]+) ([A-Za-z0-9_]+)\].*/\1.\2/" | sort -u)"
+  FAILED_TESTS="$(grep -E "^Test Case .* failed" "$LOGDIR/test.log" | sed -E "s/.*\[PocketPilotCoreTests\.([A-Za-z]+) ([A-Za-z0-9_]+)\].*/\1.\2/" | sort -u)"
   if [ $TEST_RC -eq 0 ]; then
     record "swift test" PASS "$SUMMARY; $SKIPPED skipped"
   else
@@ -77,7 +77,7 @@ elif [ "$RUN_TESTS" = 1 ]; then
   record "swift test" SKIP "build failed"
 fi
 
-# 3. MCP end-to-end against opentap-mock ------------------------------------------------------------
+# 3. MCP end-to-end against pocketpilot-mock ------------------------------------------------------------
 start_mock() { # port, extra args...  -> sets MOCK_PID, returns 0 when listening
   local port="$1"; shift
   local log="$LOGDIR/mock-$port.log"
@@ -94,10 +94,10 @@ start_mock() { # port, extra args...  -> sets MOCK_PID, returns 0 when listening
 
 run_e2e() { # name, port, mock args (quoted string), e2e args...
   local name="$1" port="$2" margs="$3"; shift 3
-  if [ ! -x "$MOCK" ]; then record "$name" SKIP "no opentap-mock binary"; return; fi
+  if [ ! -x "$MOCK" ]; then record "$name" SKIP "no pocketpilot-mock binary"; return; fi
   # shellcheck disable=SC2086
   if ! start_mock "$port" $margs; then
-    record "$name" FAIL "opentap-mock didn't start: $(tail -2 "$LOGDIR/mock-$port.log" | tr '\n' ' ' | cut -c1-140)"
+    record "$name" FAIL "pocketpilot-mock didn't start: $(tail -2 "$LOGDIR/mock-$port.log" | tr '\n' ' ' | cut -c1-140)"
     return
   fi
   # Probe with curl first so a dead socket shows up as such.
@@ -116,7 +116,7 @@ run_e2e() { # name, port, mock args (quoted string), e2e args...
 }
 
 if [ "${RESULTS[0]}" = PASS ]; then
-  bold "MCP end-to-end (opentap-mock on :$PORT)"
+  bold "MCP end-to-end (pocketpilot-mock on :$PORT)"
   run_e2e "mcp e2e (mock phone)" "$PORT" ""
   bold "MCP fault scenarios"
   run_e2e "fault: no-bluetooth" "$((PORT + 1))" "--fault no-bluetooth" --scenario no-bluetooth
@@ -129,7 +129,7 @@ fi
 # 4. Table -------------------------------------------------------------------------------------------
 W=10; for n in "${NAMES[@]}"; do [ ${#n} -gt $W ] && W=${#n}; done
 LINE="+-$(printf '%*s' "$W" '' | tr ' ' '-')-+------+"
-printf '\n%s\n| %-*s | %-4s |\n%s\n' "$LINE" "$W" "OpenTap QA" "" "$LINE"
+printf '\n%s\n| %-*s | %-4s |\n%s\n' "$LINE" "$W" "PocketPilot QA" "" "$LINE"
 FAILS=0
 for i in "${!NAMES[@]}"; do
   printf '| %-*s | %-4s | %s\n' "$W" "${NAMES[$i]}" "${RESULTS[$i]}" "${NOTES[$i]}"

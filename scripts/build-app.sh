@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds build/OpenTap.app (release), embeds Info.plist with the Camera/Bluetooth usage strings
+# Builds build/PocketPilot.app (release), embeds Info.plist with the Camera/Bluetooth usage strings
 # and ad-hoc signs it. Does not launch the app.
 # Usage: scripts/build-app.sh [scratch-path]   (default .build-app)
 set -euo pipefail
@@ -15,12 +15,12 @@ for key in CFBundleIdentifier NSCameraUsageDescription NSBluetoothAlwaysUsageDes
   }
 done
 
-swift build -c release --product OpenTap --scratch-path "$SCRATCH"
-BIN="$(swift build -c release --product OpenTap --scratch-path "$SCRATCH" --show-bin-path)/OpenTap"
-APP="build/OpenTap.app"
+swift build -c release --product PocketPilot --scratch-path "$SCRATCH"
+BIN="$(swift build -c release --product PocketPilot --scratch-path "$SCRATCH" --show-bin-path)/PocketPilot"
+APP="build/PocketPilot.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BIN" "$APP/Contents/MacOS/OpenTap"
+cp "$BIN" "$APP/Contents/MacOS/PocketPilot"
 cp "$PLIST" "$APP/Contents/Info.plist"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 if [ -f Resources/AppIcon.icns ]; then
